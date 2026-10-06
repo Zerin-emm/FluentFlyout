@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2024-2026 The FluentFlyout Authors
+// Copyright (c) 2024-2026 The FluentFlyout Authors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 using FluentFlyout.Classes;
@@ -16,7 +16,7 @@ namespace FluentFlyoutWPF.Windows;
 /// </summary>
 public partial class NextUpWindow : MicaWindow
 {
-    MainWindow mainWindow = (MainWindow)Application.Current.MainWindow;
+    MainWindow? mainWindow = Application.Current?.MainWindow as MainWindow;
     public NextUpWindow(string title, string artist, BitmapImage thumbnail)
     {
         DataContext = SettingsManager.Current;
@@ -49,12 +49,12 @@ public partial class NextUpWindow : MicaWindow
         UpdateThumbnail(thumbnail);
         Show();
 
-        mainWindow.OpenAnimation(this);
+        mainWindow?.OpenAnimation(this);
 
         async void wait()
         {
             await Task.Delay(SettingsManager.Current.NextUpDuration);
-            mainWindow.CloseAnimation(this);
+            mainWindow?.CloseAnimation(this);
             await Task.Delay(MainWindow.getDuration());
             Close();
         }

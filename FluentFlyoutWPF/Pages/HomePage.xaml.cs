@@ -11,7 +11,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
-using Windows.ApplicationModel;
 using Wpf.Ui.Controls;
 using MessageBox = Wpf.Ui.Controls.MessageBox;
 
@@ -26,15 +25,7 @@ public partial class HomePage : Page
         InitializeComponent();
         DataContext = SettingsManager.Current;
 
-        try
-        {
-            var version = Package.Current.Id.Version;
-            VersionTextBlock.Text = $"v{version.Major}.{version.Minor}.{version.Build}";
-        }
-        catch
-        {
-            VersionTextBlock.Text = "debug version";
-        }
+        VersionTextBlock.Text = AppVersion.CurrentTag;
 
         UpdateLastCheckedText();
     }
@@ -44,7 +35,7 @@ public partial class HomePage : Page
         if (UpdateState.Current.LastUpdateCheck != default)
         {
             LastCheckedText.Text = string.Format(
-                Application.Current.FindResource("LastChecked")?.ToString(),
+                Application.Current?.TryFindResource("LastChecked")?.ToString() ?? string.Empty,
                 UpdateState.Current.LastCheckedText);
         }
         else
@@ -55,7 +46,7 @@ public partial class HomePage : Page
 
     private void ViewUpdates_Click(object sender, RoutedEventArgs e)
     {
-        Notifications.OpenChangelogInBrowser();
+        Notifications.OpenReleaseNotesInBrowser();
     }
 
     private long _lastChecked = 0;
@@ -70,24 +61,37 @@ public partial class HomePage : Page
 
         _lastChecked = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
-        if (UpdateState.Current.IsUpdateAvailable)
+        var result = await CheckForUpdatesAsync();
+
+        if (result is not { Success: true, IsUpdateAvailable: true })
         {
-            string url = !string.IsNullOrEmpty(UpdateState.Current.UpdateUrl) ? UpdateState.Current.UpdateUrl : "https://fluentflyout.com/changelog/";
-            UpdateCheckerService.OpenUpdateUrl(url);
+            return;
         }
-        else
+
+        // The update is a manual download, so the only action offered is to open the release page.
+        // Declining it closes the dialog and nothing else happens - no reminder is scheduled.
+        try
         {
-            await CheckForUpdatesAsync();
+            if (await UpdateCheckerService.ShowUpdateAvailableDialogAsync(result.NewestVersion))
+            {
+                UpdateCheckerService.OpenUpdateUrl(result.UpdateUrl);
+            }
+        }
+        catch (Exception ex)
+        {
+            // An async void handler must not let an exception escape: it would reach
+            // AppDomain.UnhandledException and take the whole application down.
+            Logger.Error(ex, "Failed to show the update dialog");
         }
     }
 
-    private async Task CheckForUpdatesAsync()
+    private async Task<UpdateCheckerService.UpdateCheckResult?> CheckForUpdatesAsync()
     {
         try
         {
             UpdateStatusText.Text = Application.Current.FindResource("CheckingForUpdates")?.ToString();
 
-            var result = await UpdateCheckerService.CheckForUpdatesAsync(SettingsManager.Current.LastKnownVersion);
+            var result = await UpdateCheckerService.CheckForUpdatesAsync(AppVersion.Current);
 
             if (result.Success)
             {
@@ -98,36 +102,21 @@ public partial class HomePage : Page
 
                 UpdateLastCheckedText();
 
-                _ = Dispatcher.InvokeAsync(async () =>
-                {
-                    try
-                    {
-                        await Task.Delay(500); // slight delay for better UX
-
-                        if (result.IsUpdateAvailable)
-                        {
-                            UpdateStatusText.Text = Application.Current.FindResource("UpdateAvailableNotificationTitle")?.ToString();
-                        }
-                        else
-                        {
-                            UpdateStatusText.Text = Application.Current.FindResource("UpToDate")?.ToString();
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Error(ex, "Error while updating update status text on UI thread");
-                    }
-                });
+                UpdateStatusText.Text = Application.Current.FindResource(
+                    result.IsUpdateAvailable ? "UpdateAvailableNotificationTitle" : "UpToDate")?.ToString();
             }
             else
             {
                 UpdateStatusText.Text = Application.Current.FindResource("UpToDate")?.ToString();
             }
+
+            return result;
         }
         catch (Exception ex)
         {
             Logger.Error(ex, "Failed to check for updates from HomePage");
             UpdateStatusText.Text = "Unable to check for updates"; // not localized
+            return null;
         }
     }
 
@@ -166,22 +155,6 @@ public partial class HomePage : Page
         SettingsWindow.NavigateToPage(typeof(SystemPage));
     }
 
-    private void ViewMicrosoftStore_Click(object sender, System.Windows.RoutedEventArgs e)
-    {
-        try
-        {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = "https://apps.microsoft.com/detail/9N45NSM4TNBP",
-                UseShellExecute = true
-            });
-        }
-        catch
-        {
-            Logger.Error("Failed to open Microsoft Store page");
-        }
-    }
-
     private void ViewLogs_Click(object sender, System.Windows.RoutedEventArgs e)
     {
         try
@@ -200,7 +173,7 @@ public partial class HomePage : Page
         {
             Process.Start(new ProcessStartInfo
             {
-                FileName = "https://github.com/unchihugo/FluentFlyout/issues/new/choose",
+                FileName = AppLinks.ReportIssue,
                 UseShellExecute = true
             });
         }

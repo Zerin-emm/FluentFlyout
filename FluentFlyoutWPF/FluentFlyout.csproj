@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows10.0.22000.0</TargetFramework>
@@ -11,17 +11,54 @@
     <AssemblyName>$(MSBuildProjectName)</AssemblyName>
     <Platforms>x64;ARM64</Platforms>
 	<RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <!-- Keep the build output directly under bin\<Configuration> instead of the default
+         bin\<Configuration>\net10.0-windows10.0.22000.0, so the folder that gets zipped up or handed
+         to a user is simply "FluentFlyout". Nothing in the project looks up the output path, so the
+         framework moniker in the path was never needed. -->
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <LangVersion>preview</LangVersion>
-    <Configurations>Debug;Release;GitHub Release</Configurations>
+    <Configurations>Debug;Release;Release-SelfContained</Configurations>
+    <!-- The single source of truth for the app version. It is shown in the settings UI and compared
+         against the newest GitHub release, so it has to be bumped for every release. -->
+    <Version>2.2.0</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- The icon of the executable itself (Explorer, taskbar, Task Manager, and the package built from
+         this project). The windows set their own Icon in XAML, which is why a missing ApplicationIcon
+         was only ever visible on the exe and on the packaged app. -->
+    <ApplicationIcon>Resources\FluentFlyout2.ico</ApplicationIcon>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 	<EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
   </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)' == 'GitHub Release'">
-    <DefineConstants>GITHUB_RELEASE</DefineConstants>
+  <!-- Shipping builds must not produce a PDB: nothing verifies the executable's architecture against it
+       (the app itself only checks the OS architecture), the MSIX package no longer exists, and no crash
+       reporting consumes it, so a .pdb next to the exe is only a giveaway of internal source structure.
+       Debug builds keep their symbols so the debugger and the reproduction harness stay usable.
+       This is also what makes the file Explorer lists in this repository's reports (FluentFlyout.pdb)
+       stop appearing in bin\Release. -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
-  <ItemGroup>
-    <Content Remove="C:\Users\hu8go\.nuget\packages\dubya.windowsmediacontroller\2.5.5\contentFiles\any\net6.0-windows10.0.22000\Icon.ico" />
+  <!-- Self contained publishing: the target machine does not need the .NET Desktop Runtime installed,
+       at the cost of roughly 220 MB of output instead of 45 MB. The runtime identifier is pinned here
+       rather than in the shared property group above, because a project wide identifier would force
+       every ordinary build and publish to carry the whole runtime and to nest its output one folder
+       deeper. Build it with:
+         dotnet build "FluentFlyoutWPF\FluentFlyout.csproj" -c Release-SelfContained -p:Platform=x64
+       For ARM64 append -p:Platform=ARM64 -p:RuntimeIdentifier=win-arm64. -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release-SelfContained'">
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-x64</RuntimeIdentifier>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(NuGetPackageRoot)' != ''">
+    <!-- The WindowsMediaController package ships an Icon.ico as a content file. A user specific absolute
+         path used to be removed here, which could only ever match on the machine that produced it - and
+         not even there, because it pinned package version 2.5.5 while 2.5.6 is referenced. Matching on
+         the NuGet package root keeps the removal working on every machine. -->
+    <Content Remove="$(NuGetPackageRoot)dubya.windowsmediacontroller\**\Icon.ico" />
   </ItemGroup>
   <ItemGroup>
     <None Remove="icon.ico" />

@@ -48,29 +48,41 @@ public class OnboardingViewModel : ObservableObject
     [
         new OnboardingStep
         {
-            Title = Application.Current.TryFindResource("MediaFlyoutTitle").ToString(),
-            Description = Application.Current.TryFindResource("MediaFlyoutDescription").ToString(),
+            Title = ResolveString("MediaFlyoutTitle"),
+            Description = ResolveString("MediaFlyoutDescription"),
             ImageSource = "/Resources/Onboarding/MediaFlyout.png"
         },
         new OnboardingStep
         {
-            Title = Application.Current.TryFindResource("VolumeFlyoutTitle").ToString(),
-            Description = Application.Current.TryFindResource("VolumeFlyoutDescription").ToString(),
+            Title = ResolveString("VolumeFlyoutTitle"),
+            Description = ResolveString("VolumeFlyoutDescription"),
             ImageSource = "/Resources/FluentFlyoutVolumeDemo.png"
         },
         new OnboardingStep
         {
-            Title = Application.Current.TryFindResource("LockKeysCustomizationTitle").ToString(),
-            Description = Application.Current.TryFindResource("LockKeysDescription").ToString(),
+            Title = ResolveString("LockKeysCustomizationTitle"),
+            Description = ResolveString("LockKeysDescription"),
             ImageSource = "/Resources/Onboarding/LockKeysFlyout.png"
         },
         new OnboardingStep
         {
-            Title = Application.Current.TryFindResource("UnlockFullExperienceText").ToString(),
+            Title = ResolveString("UnlockFullExperienceText"),
             Description = "",
             ImageSource = "/Resources/Onboarding/Taskbar.png"
         }
     ];
+
+    /// <summary>
+    /// Resolves a localized resource without throwing when the key or the application resources are missing
+    /// </summary>
+    /// <remarks>
+    /// The steps above are built by a property initializer, so a missing key used to surface as a
+    /// NullReferenceException while the window was being constructed - before any error handling exists.
+    /// </remarks>
+    private static string ResolveString(string key)
+    {
+        return Application.Current?.TryFindResource(key)?.ToString() ?? string.Empty;
+    }
 
     public int CurrentStepIndex
     {
@@ -95,9 +107,9 @@ public class OnboardingViewModel : ObservableObject
 
     public OnboardingStep CurrentStep => Steps[CurrentStepIndex];
 
-    public string StepProgressText => string.Format(Application.Current.TryFindResource("OnboardingStepsCounter").ToString(), CurrentStepIndex + 1, Steps.Count);
+    public string StepProgressText => string.Format(ResolveString("OnboardingStepsCounter"), CurrentStepIndex + 1, Steps.Count);
 
-    public string? NextButtonText => IsLastStep ? Application.Current.TryFindResource("Finish").ToString() : Application.Current.TryFindResource("Next").ToString();
+    public string? NextButtonText => IsLastStep ? ResolveString("Finish") : ResolveString("Next");
 
     public bool IsLastStep => CurrentStepIndex >= Steps.Count - 1;
 

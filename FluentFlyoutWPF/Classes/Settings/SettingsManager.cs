@@ -22,22 +22,6 @@ public class SettingsManager
     );
 
     private static UserSettings? _current;
-    private static XmlSerializer? _exportSerializer;
-
-    private static XmlSerializer GetExportSerializer()
-    {
-        if (_exportSerializer == null)
-        {
-            XmlAttributeOverrides overrides = new XmlAttributeOverrides();
-            XmlAttributes ignoreAttrs = new XmlAttributes();
-            ignoreAttrs.XmlIgnore = true;
-            overrides.Add(typeof(UserSettings), "Uuid", ignoreAttrs);
-            overrides.Add(typeof(UserSettings), "IsStoreVersion", ignoreAttrs);
-            _exportSerializer = new XmlSerializer(typeof(UserSettings), overrides);
-        }
-        return _exportSerializer;
-    }
-
     private static bool DeserializeSettings(string filePath, out UserSettings? settings)
     {
         settings = null;
@@ -59,7 +43,15 @@ public class SettingsManager
     {
         get
         {
-            _current ??= new UserSettings();
+            if (_current == null)
+            {
+                // CompleteInitialization() is what flips UserSettings out of its "still loading" state,
+                // which suppresses every save. A lazily created instance that skipped it would accept
+                // changes and silently never persist them.
+                _current = new UserSettings();
+                _current.CompleteInitialization();
+            }
+
             return _current;
         }
         set => _current = value;
@@ -71,7 +63,6 @@ public class SettingsManager
     /// <returns>The restored settings.</returns>
     public static UserSettings RestoreSettings(string? filePath = null)
     {
-        bool isImport = filePath != null;
         filePath ??= SettingsFilePath;
         string backupPath = filePath + ".bak";
 
@@ -79,12 +70,6 @@ public class SettingsManager
         {
             if (DeserializeSettings(filePath, out var loadedSettings) && loadedSettings != null)
             {
-                if (isImport && _current != null)
-                {
-                    loadedSettings.Uuid = _current.Uuid;
-                    loadedSettings.IsStoreVersion = _current.IsStoreVersion;
-                }
-
                 _current = loadedSettings;
                 _current.CompleteInitialization();
 
@@ -130,9 +115,12 @@ public class SettingsManager
     /// </summary>
     public static void SaveSettings(string? filePath = null)
     {
-        bool isExport = filePath != null;
         filePath ??= SettingsFilePath;
-        string tempPath = filePath + ".tmp";
+
+        // A temp file unique to this call. The previous shared "settings.xml.tmp" was written by every
+        // save, so a second save could overwrite the temp file while the first replacement was still
+        // reading it, and the outcome depended on which of the two finished last.
+        string tempPath = $"{filePath}.{Guid.NewGuid():N}.tmp";
         string backupPath = filePath + ".bak";
 
         try
@@ -145,52 +133,28 @@ public class SettingsManager
                     Directory.CreateDirectory(directory);
                 }
 
-                _current ??= new UserSettings();
+                UserSettings settings = Current;
 
                 using (var writer = new StreamWriter(tempPath, false))
                 {
-                    XmlSerializer xmlSerializer;
-                    if (isExport)
-                    {
-                        xmlSerializer = GetExportSerializer();
-                    }
-                    else
-                    {
-                        xmlSerializer = new XmlSerializer(typeof(UserSettings));
-                    }
-                    xmlSerializer.Serialize(writer, _current);
+                    new XmlSerializer(typeof(UserSettings)).Serialize(writer, settings);
                 }
 
+                // The replacement deliberately stays inside the lock and on the calling thread. It used
+                // to be dispatched with Task.Run, which ran it *after* the lock was released: two saves
+                // could then interleave and the last writer won unpredictably, and a save issued right
+                // before shutdown could simply be lost. The replacement is a few milliseconds of I/O on
+                // a small XML file - a fair price for a guaranteed save order.
                 if (File.Exists(filePath))
-                    _ = Task.Run(async () =>
-                    {
-                        // Run asynchronously to avoid blocking the UI thread
-                        try
-                        {
-                            await TryReplaceSettingsFileAsync(filePath, tempPath, backupPath);
-                            Logger.Info("Settings successfully saved to {0}", filePath);
-                        }
-                        catch (Exception ex)
-                        {
-                            Logger.Error(ex, "Error replacing settings file");
-                        }
-                        finally
-                        {
-                            TryDeleteFileIfExists(tempPath);
-                        }
-                    });
+                {
+                    TryReplaceSettingsFile(filePath, tempPath, backupPath);
+                }
                 else
                 {
-                    try
-                    {
-                        File.Move(tempPath, filePath, true);
-                        Logger.Info("Settings successfully saved to {0}", filePath);
-                    }
-                    finally
-                    {
-                        TryDeleteFileIfExists(tempPath);
-                    }
+                    File.Move(tempPath, filePath, true);
                 }
+
+                Logger.Info("Settings successfully saved to {0}", filePath);
             }
         }
         catch (UnauthorizedAccessException ex)
@@ -203,9 +167,14 @@ public class SettingsManager
             // if the settings file cannot be saved
             Logger.Error(ex, "Error saving settings");
         }
+        finally
+        {
+            // the temp file is unique to this call, so cleaning it up here cannot race with another save
+            TryDeleteFileIfExists(tempPath);
+        }
     }
 
-    private async static Task TryReplaceSettingsFileAsync(string filePath, string tempPath, string backupPath)
+    private static void TryReplaceSettingsFile(string filePath, string tempPath, string backupPath)
     {
         Logger.Debug("Initializing replacing settings file at {0}", filePath);
         int maxAttempts = 5;
@@ -215,7 +184,7 @@ public class SettingsManager
             try
             {
                 File.Replace(tempPath, filePath, backupPath, ignoreMetadataErrors: true);
-                break;
+                return;
             }
             catch (IOException ex) when (attempts < maxAttempts)
             {

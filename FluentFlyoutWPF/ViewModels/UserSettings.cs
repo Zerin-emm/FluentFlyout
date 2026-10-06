@@ -290,9 +290,6 @@ public partial class UserSettings : ObservableObject
     [ObservableProperty]
     public partial bool PauseOtherSessionsEnabled { get; set; }
 
-    [ObservableProperty]
-    public partial string PinnedSessionId { get; set; }
-
     /// <summary>
     /// Enable subtle animations for the lock keys flyout indicator
     /// </summary>
@@ -639,13 +636,6 @@ public partial class UserSettings : ObservableObject
     public partial int TaskbarVisualizerAudioPeakLevel { get; set; }
 
     /// <summary>
-    /// Gets whether premium features are unlocked (runtime only, not persisted)
-    /// </summary>
-    [XmlIgnore]
-    [ObservableProperty]
-    public partial bool IsPremiumUnlocked { get; set; }
-
-    /// <summary>
     /// Gets or sets the opacity level of the acrylic blur effect.
     /// </summary>
     [ObservableProperty]
@@ -655,46 +645,14 @@ public partial class UserSettings : ObservableObject
     public partial bool UseAlbumArtAsAccentColor { get; set; }
 
     /// <summary>
-    /// Gets whether this is a Store version. Once false, always false (only if last known version was not null).
-    /// </summary>
-    [ObservableProperty]
-    public partial bool IsStoreVersion { get; set; }
-
-    [XmlIgnore]
-    [ObservableProperty]
-    public partial string PremiumPrice { get; set; }
-
-    [XmlIgnore]
-    [ObservableProperty]
-    public partial string PremiumPurchaseAction { get; set; }
-
-    /// <summary>
-    /// Last time the program has sent an update notification in Unix seconds.
-    /// </summary>
-    [ObservableProperty]
-    public partial long LastUpdateNotificationUnixSeconds { get; set; }
-
-    /// <summary>
-    /// Determines whether user will get Windows notifications when a new update is available.
-    /// </summary>
-    [ObservableProperty]
-    public partial bool ShowUpdateNotifications { get; set; }
-
-    /// <summary>
     /// Determines whether to use the legacy method for calculating taskbar width for widget positioning for compatibility with other taskbar mods
     /// </summary>
     [ObservableProperty]
     public partial bool LegacyTaskbarWidthEnabled { get; set; }
 
-    [ObservableProperty]
-    public partial Guid Uuid { get; set; }
-
     [XmlIgnore]
     [ObservableProperty]
     public partial Guid SessionId { get; set; } = Guid.NewGuid();
-
-    [ObservableProperty]
-    public partial bool AnonymousTelemetryAllowed { get; set; }
 
     [XmlIgnore]
     private bool _initializing = true;
@@ -737,7 +695,6 @@ public partial class UserSettings : ObservableObject
         LastKnownVersion = string.Empty;
         SeekbarEnabled = false;
         PauseOtherSessionsEnabled = false;
-        PinnedSessionId = string.Empty;
         LockKeysAnimated = true;
         LockKeysInsertEnabled = true;
         MediaFlyoutBackgroundBlur = 0;
@@ -782,11 +739,7 @@ public partial class UserSettings : ObservableObject
         VolumeMixerHighlightActiveApps = false;
         AcrylicBlurOpacity = 175;
         UseAlbumArtAsAccentColor = false;
-        LastUpdateNotificationUnixSeconds = 0;
-        ShowUpdateNotifications = true;
         LegacyTaskbarWidthEnabled = false;
-        Uuid = Guid.NewGuid();
-        AnonymousTelemetryAllowed = true;
         AllowedApps = [];
         BlockedApps = [];
 
@@ -853,7 +806,25 @@ public partial class UserSettings : ObservableObject
     partial void OnAppLanguageChanged(string oldValue, string newValue)
     {
         if (oldValue == newValue) return;
-        SelectedLanguage = LanguageOptions.First(l => l.Tag == newValue);
+
+        // LanguageOptions is populated from LocalizationManager._supportedLanguages in the constructor,
+        // so this runs before deserialization. A language saved by an older build (or a hand-edited
+        // settings file) may no longer be supported here; matching with First() would throw
+        // InvalidOperationException, which SettingsManager.RestoreSettings catches by discarding the
+        // whole settings file. Fall back to English instead of destroying the user's configuration.
+        var match = LanguageOptions.FirstOrDefault(l => l.Tag == newValue);
+        if (match is null)
+        {
+            Logger.Warn($"Language '{newValue}' is not supported, falling back to en-US.");
+            AppLanguage = "en-US";
+            match = LanguageOptions.FirstOrDefault(l => l.Tag == "en-US");
+            if (match is null) return;
+        }
+
+        if (!ReferenceEquals(SelectedLanguage, match))
+        {
+            SelectedLanguage = match;
+        }
     }
 
     partial void OnSelectedLanguageChanged(LanguageOption oldValue, LanguageOption newValue)
@@ -887,14 +858,6 @@ public partial class UserSettings : ObservableObject
     partial void OnTaskbarWidgetEnabledChanged(bool oldValue, bool newValue)
     {
         if (oldValue == newValue || _initializing) return;
-
-        // Check premium status before allowing widget to be enabled
-        if (newValue && !SettingsManager.Current.IsPremiumUnlocked)
-        {
-            // Revert the change if premium is not unlocked
-            TaskbarWidgetEnabled = false;
-            return;
-        }
 
         UpdateTaskbar();
     }
@@ -946,7 +909,7 @@ public partial class UserSettings : ObservableObject
     {
         if (oldValue == newValue || _initializing) return;
 
-        MainWindow mainWindow = (MainWindow)Application.Current.MainWindow;
+        if (Application.Current?.MainWindow is not MainWindow mainWindow) return;
         mainWindow.taskbarWindow?.Widget?.ReorderControls();
     }
 
@@ -962,10 +925,12 @@ public partial class UserSettings : ObservableObject
         UpdateTaskbar();
     }
 
-    private void UpdateTaskbar()
+    private static void UpdateTaskbar()
     {
-        MainWindow mainWindow = (MainWindow)Application.Current.MainWindow;
-        mainWindow.UpdateTaskbar();
+        if (Application.Current?.MainWindow is MainWindow mainWindow)
+        {
+            _ = mainWindow.UpdateTaskbarAsync();
+        }
     }
 
     partial void OnTaskbarWidgetScrollingEnabledChanged(bool oldValue, bool newValue)
@@ -988,7 +953,7 @@ public partial class UserSettings : ObservableObject
 
     private void UpdateTaskbarMarquees()
     {
-        MainWindow mainWindow = (MainWindow)Application.Current.MainWindow;
+        if (Application.Current?.MainWindow is not MainWindow mainWindow) return;
         var widget = mainWindow.taskbarWindow?.Widget;
         if (widget == null) return;
         widget.Dispatcher.Invoke(widget.UpdateMarquees);
@@ -1031,28 +996,16 @@ public partial class UserSettings : ObservableObject
     {
         if (oldValue == newValue || _initializing) return;
 
-        MainWindow mainWindow = (MainWindow)Application.Current.MainWindow;
-        mainWindow?.RefreshFilteredMedia();
+        if (Application.Current?.MainWindow is MainWindow mainWindow)
+            mainWindow.RefreshFilteredMedia();
     }
 
     partial void OnAppFilteringModeChanged(int oldValue, int newValue)
     {
         if (oldValue == newValue || _initializing) return;
 
-        MainWindow mainWindow = (MainWindow)Application.Current.MainWindow;
-        mainWindow?.RefreshFilteredMedia();
-    }
-
-    partial void OnVolumeMixerHighlightActiveAppsChanged(bool oldValue, bool newValue)
-    {
-        if (oldValue == newValue || _initializing) return;
-
-        // Check premium status before allowing highlight to be enabled
-        if (newValue && !SettingsManager.Current.IsPremiumUnlocked)
-        {
-            VolumeMixerHighlightActiveApps = false;
-            return;
-        }
+        if (Application.Current?.MainWindow is MainWindow mainWindow)
+            mainWindow.RefreshFilteredMedia();
     }
 
     partial void OnVolumeControlEnabledChanged(bool oldValue, bool newValue)

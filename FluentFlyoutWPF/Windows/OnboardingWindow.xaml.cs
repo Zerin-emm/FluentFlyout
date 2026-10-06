@@ -51,8 +51,6 @@ public partial class OnboardingWindow : MicaWindow
         {
             await Task.Delay(500);
             _viewModel.IsLoading = false;
-
-            FluentFlyout.Classes.LicenseManager.GetPremiumProductInfo();
         };
 
         // unused for now, but can be used in the future if we want to allow users to select a monitor during onboarding
@@ -144,10 +142,9 @@ public partial class OnboardingWindow : MicaWindow
     {
         if (instance == null)
         {
-            new OnboardingWindow().Show();
-            instance?.Activate();
-
-            _ = TelemetryService.SendTelemetryEventAsync("onboarding_started", "onboarding");
+            var window = new OnboardingWindow();
+            window.Show();
+            window.Activate();
         }
         else
         {
@@ -163,8 +160,6 @@ public partial class OnboardingWindow : MicaWindow
 
     private void OnOnboardingCompleted(object? sender, EventArgs e)
     {
-        _ = TelemetryService.SendTelemetryEventAsync("onboarding_completed", "onboarding");
-
         SettingsWindow.ShowInstance();
         Close();
     }

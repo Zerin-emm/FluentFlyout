@@ -9,7 +9,7 @@ namespace FluentFlyoutWPF.Classes;
 public class AudioDeviceMonitor : IDisposable
 {
     private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
-    private static AudioDeviceMonitor? _instance;
+    private static volatile AudioDeviceMonitor? _instance;
     private static readonly object _instanceLock = new();
 
     private MMDeviceEnumerator? _deviceEnumerator;
@@ -93,6 +93,26 @@ public class AudioDeviceMonitor : IDisposable
             // TODO: we could investigate if returning GetDefaultRenderDevice() works as a fallback for returning null
             return null;
         }
+    }
+
+    /// <summary>
+    /// Disposes the shared monitor and clears the singleton
+    /// </summary>
+    /// <remarks>
+    /// The instance was only reachable through <see cref="Instance"/>, so the device enumerator and
+    /// the endpoint notification callback had no owner that could ever release them.
+    /// </remarks>
+    public static void DisposeInstance()
+    {
+        AudioDeviceMonitor? monitor;
+
+        lock (_instanceLock)
+        {
+            monitor = _instance;
+            _instance = null;
+        }
+
+        monitor?.Dispose();
     }
 
     public void Dispose()

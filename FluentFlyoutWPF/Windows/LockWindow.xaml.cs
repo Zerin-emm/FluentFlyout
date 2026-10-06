@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2024-2026 The FluentFlyout Authors
+// Copyright (c) 2024-2026 The FluentFlyout Authors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 using FluentFlyout.Classes;
@@ -18,7 +18,7 @@ namespace FluentFlyoutWPF.Windows;
 public partial class LockWindow : MicaWindow
 {
     private CancellationTokenSource cts;
-    private MainWindow _mainWindow = (MainWindow)Application.Current.MainWindow;
+    private readonly MainWindow? _mainWindow = Application.Current.MainWindow as MainWindow;
     private bool _isHiding = true;
     private MonitorInfo _openedMonitor;
 
@@ -36,30 +36,41 @@ public partial class LockWindow : MicaWindow
         cts = new CancellationTokenSource();
     }
 
+    /// <summary>
+    /// Resolves a localized resource without throwing when the key or the application resources are missing
+    /// </summary>
+    private static string ResolveString(string key)
+    {
+        return Application.Current?.TryFindResource(key)?.ToString() ?? string.Empty;
+    }
+
     private void setStatus(string key, bool isOn)
     {
         Dispatcher.Invoke(() =>
         {
-            if (key == "Insert")
+            // Insert has no readable state: Windows keeps no Insert/Overwrite flag and
+            // IsKeyToggled(Key.Insert) is always false, so the flyout always presents Insert as
+            // "pressed" instead of pretending to know which mode the focused app is in.
+            bool isInsertKey = key == "Insert";
+
+            if (isInsertKey)
             {
-                // not sure how to properly check if overwrite or insert as every program has different behavior
-                //if (isOn) LockTextBlock.Text = "Insert mode";
-                //else LockTextBlock.Text = "Overwrite mode";
-                LockTextBlock.Text = FindResource("LockWindow_InsertPressed").ToString();
-                isOn = true;
+                LockTextBlock.Text = ResolveString("LockWindow_InsertPressed");
             }
-            else LockTextBlock.Text = key + " " + (isOn ? FindResource("LockWindow_LockOn").ToString() : FindResource("LockWindow_LockOff").ToString());
+            else
+            {
+                LockTextBlock.Text = key + " " + (isOn ? ResolveString("LockWindow_LockOn") : ResolveString("LockWindow_LockOff"));
+            }
 
-            LockTextBlock.FontWeight = SettingsManager.Current.LockKeysBoldUi
-                ? SettingsManager.Current.AppLanguage == "zh-CN" || SettingsManager.Current.AppLanguage == "zh-TW"
-                    ? FontWeights.Bold
-                    : FontWeights.Medium
-                : FontWeights.Normal;
+            LockTextBlock.FontWeight = SettingsManager.Current.LockKeysBoldUi ? FontWeights.Medium : FontWeights.Normal;
 
-            double targetOpacity = isOn ? 1.0 : 0.2;
-            double targetWidth = isOn ? 60.0 : 36.0;
+            // the indicator only has an "on" and an "off" look, and Insert shares the "on" look
+            bool isActive = isInsertKey || isOn;
 
-            double targetShackleAngle = isOn ? 0.0 : 25.0;
+            double targetOpacity = isActive ? 1.0 : 0.2;
+            double targetWidth = isActive ? 60.0 : 36.0;
+
+            double targetShackleAngle = isActive ? 0.0 : 25.0;
             double targetShackleBounceY = 0.0;
 
             int msDuration = (int)(MainWindow.getDuration() / 1.5);
@@ -149,7 +160,7 @@ public partial class LockWindow : MicaWindow
         {
             _isHiding = false;
             _openedMonitor = GetPreferredTargetDisplay();
-            _mainWindow.OpenAnimation(window: this, alwaysBottom: true, selectedMonitor: _openedMonitor);
+            _mainWindow?.OpenAnimation(window: this, alwaysBottom: true, selectedMonitor: _openedMonitor);
         }
         cts.Cancel();
         cts = new CancellationTokenSource();
@@ -160,7 +171,7 @@ public partial class LockWindow : MicaWindow
             while (!token.IsCancellationRequested)
             {
                 await Task.Delay(SettingsManager.Current.LockKeysDuration, token);
-                _mainWindow.CloseAnimation(window: this, selectedMonitor: _openedMonitor);
+                _mainWindow?.CloseAnimation(window: this, selectedMonitor: _openedMonitor);
                 _isHiding = true;
                 await Task.Delay(MainWindow.getDuration());
                 if (_isHiding == false) return;

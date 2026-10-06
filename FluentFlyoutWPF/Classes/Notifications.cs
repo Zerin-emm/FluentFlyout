@@ -1,7 +1,7 @@
-﻿// Copyright (c) 2024-2026 The FluentFlyout Authors
+// Copyright (c) 2024-2026 The FluentFlyout Authors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-using FluentFlyout.Classes.Settings;
+using FluentFlyoutWPF.Classes.Utils;
 using Microsoft.Toolkit.Uwp.Notifications;
 using NLog;
 using System.Runtime.InteropServices;
@@ -31,13 +31,7 @@ internal static class Notifications
                 switch (action)
                 {
                     case "viewChanges":
-                        OpenChangelogInBrowser();
-                        break;
-                    case "downloadUpdate":
-                        if (args.TryGetValue("url", out string url))
-                        {
-                            OpenUrlInBrowser(url);
-                        }
+                        OpenReleaseNotesInBrowser();
                         break;
                 }
             }
@@ -48,9 +42,23 @@ internal static class Notifications
         }
     }
 
-    public static void OpenChangelogInBrowser()
+    /// <summary>
+    /// Opens the release page of this repository, which lists what changed in the newest and the
+    /// previously installed version.
+    /// </summary>
+    public static void OpenReleaseNotesInBrowser()
     {
-        OpenUrlInBrowser("https://fluentflyout.com/changelog/");
+        OpenUrlInBrowser(AppLinks.LatestRelease);
+    }
+
+    /// <summary>
+    /// Resolves a localized resource to a string, tolerating a missing key.
+    /// FindResource returns object, so both the lookup and ToString() can produce null.
+    /// </summary>
+    private static string ResolveString(string key)
+    {
+        var value = Application.Current?.TryFindResource(key);
+        return value?.ToString() ?? string.Empty;
     }
 
     /// <summary>
@@ -60,7 +68,7 @@ internal static class Notifications
     /// <param name="currentVersion"></param>
     public static void ShowFirstOrUpdateNotification(string lastKnownVersion, string currentVersion)
     {
-        if (string.IsNullOrEmpty(lastKnownVersion) || currentVersion == "debug")
+        if (string.IsNullOrEmpty(lastKnownVersion))
         {
             return;
         }
@@ -71,11 +79,11 @@ internal static class Notifications
             {
                 // updated app version
                 new ToastContentBuilder()
-                    .AddText(Application.Current.FindResource("UpdateToastTitle").ToString())
-                    .AddText(string.Format(Application.Current.FindResource("UpdateToastMessage").ToString(), currentVersion))
+                    .AddText(ResolveString("UpdateToastTitle"))
+                    .AddText(string.Format(ResolveString("UpdateToastMessage"), currentVersion))
                     .AddArgument("action", "viewChanges")
                     .AddButton(new ToastButton()
-                        .SetContent(Application.Current.FindResource("UpdateToastButton").ToString())
+                        .SetContent(ResolveString("UpdateToastButton"))
                         .AddArgument("action", "viewChanges")
                         .SetBackgroundActivation())
                     .Show();
@@ -92,54 +100,15 @@ internal static class Notifications
         }
     }
 
-    /// <summary>
-    /// Show a Windows notification when an update is available
-    /// </summary>
-    /// <param name="newVersion">The new version available</param>
-    /// <param name="updateUrl">The URL to download the update (can be empty)</param>
-    public static void ShowUpdateAvailableNotification(string newVersion, string updateUrl)
-    {
-        if (!SettingsManager.Current.ShowUpdateNotifications) return;
-
-        long currentUnixSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-
-        if (currentUnixSeconds - SettingsManager.Current.LastUpdateNotificationUnixSeconds < TimeSpan.FromDays(5).TotalSeconds) // 5 days cooldown
-        {
-            return;
-        }
-
-        try
-        {
-            var builder = new ToastContentBuilder()
-                .AddText(Application.Current.FindResource("UpdateAvailableNotificationTitle").ToString())
-                .AddText(string.Format(Application.Current.FindResource("UpdateAvailableNotificationMessage").ToString(), newVersion))
-                .AddArgument("action", "downloadUpdate");
-
-            // only add download button if URL is available
-            if (!string.IsNullOrEmpty(updateUrl))
-            {
-                builder.AddButton(new ToastButton()
-                    .SetContent(Application.Current.FindResource("UpdateAvailableNotificationButton").ToString())
-                    .AddArgument("action", "downloadUpdate")
-                    .AddArgument("url", updateUrl)
-                    .SetBackgroundActivation());
-            }
-
-            builder.Show();
-
-            SettingsManager.Current.LastUpdateNotificationUnixSeconds = currentUnixSeconds;
-
-            Logger.Info($"Displayed update available notification for {newVersion}");
-        }
-        catch (Exception ex)
-        {
-            Logger.Error(ex, "Failed to show update available notification");
-        }
-    }
-
     public static void OpenUrlInBrowser(string url)
     {
         if (string.IsNullOrEmpty(url)) return;
+
+        if (!UrlHelper.IsSafeToOpen(url))
+        {
+            Logger.Warn($"Refusing to open URL with an untrusted scheme or host: {url}");
+            return;
+        }
 
         try
         {

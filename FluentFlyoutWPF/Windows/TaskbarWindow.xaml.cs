@@ -31,6 +31,11 @@ public partial class TaskbarWindow : Window
     private readonly int _nativeWidgetsPadding = 216;
     private readonly double _scale = 0.9;
 
+    // The UI Automation queries run on a worker thread. These are the budgets the UI thread waits for
+    // them before giving up on a taskbar element whose provider has stopped responding.
+    private static readonly TimeSpan AutomationFindTimeout = TimeSpan.FromMilliseconds(1000);
+    private static readonly TimeSpan AutomationBoundsTimeout = TimeSpan.FromMilliseconds(500);
+
     private IntPtr _trayHandle;
     private AutomationElement? _widgetElement;
     private AutomationElement? _trayElement;
@@ -40,6 +45,7 @@ public partial class TaskbarWindow : Window
     private int _lastSelectedMonitor = -1;
     private IntPtr _lastTaskbarHandle;
     private bool _positionUpdateInProgress;
+    private static bool _suppressedMessagesLogged;
     private bool _isClosing;
     private readonly Dictionary<string, Task> _pendingAutomationTasks = [];
 
@@ -91,6 +97,13 @@ public partial class TaskbarWindow : Window
         // For example, Nilesoft Shell and "Click on empty taskbar space" from Windhawk.
         // Therefore, we are preventing the propagation of this message.
         // Also prevents the widget from blocking taskbar's message processing, which is another source of freezes.
+        //
+        // Trade-off: suppressing WM_GETOBJECT keeps the widget out of the taskbar's UI Automation tree,
+        // so screen readers and automation tools cannot see it. That is accepted because the freeze it
+        // prevents happens on machines that never asked for either, and the tools cannot be detected
+        // reliably (they inject into Explorer, and there is no supported way to query them), so the
+        // filtering is unconditional. The first suppression is logged so a report about missing
+        // accessibility information can be traced back to this branch.
         switch (msg)
         {
             case 0x003D: // WM_GETOBJECT (Sent by Microsoft UI Automation to obtain information about an accessible object contained in a server application)
@@ -99,6 +112,13 @@ public partial class TaskbarWindow : Window
             case 0x0083: // WM_NCCALCSIZE - Can trigger layout storms
             case 0x0281: // WM_IME_SETCONTEXT - IME conflicts
             case 0x0282: // WM_IME_NOTIFY
+                if (!_suppressedMessagesLogged)
+                {
+                    _suppressedMessagesLogged = true;
+                    Logger.Info("Suppressing taskbar widget messages (WM_GETOBJECT etc.) to avoid taskbar freezes; " +
+                        "the widget is not visible to UI Automation as a result");
+                }
+
                 handled = true;
                 return IntPtr.Zero;
 
@@ -119,7 +139,7 @@ public partial class TaskbarWindow : Window
     private void Window_Loaded(object sender, RoutedEventArgs e)
     {
         SetupWindow();
-        _mainWindow = (MainWindow)Application.Current.MainWindow;
+        _mainWindow = Application.Current?.MainWindow as MainWindow;
         Widget.SetMainWindow(_mainWindow);
     }
 
@@ -220,19 +240,54 @@ public partial class TaskbarWindow : Window
             IntPtr taskbarHandle = GetSelectedTaskbarHandle(out bool isMainTaskbarSelected);
             ResetTaskbarCachesIfHandleChanged(taskbarHandle);
 
-            // This prevents the window from trying to float above the taskbar as a separate entity
-            int style = GetWindowLong(taskbarWindowHandle, GWL_STYLE);
-            style = (style & ~WS_POPUP) | WS_CHILD;
-            SetWindowLong(taskbarWindowHandle, GWL_STYLE, style);
+            if (!AttachToTaskbar(taskbarWindowHandle, taskbarHandle))
+            {
+                // The taskbar is not up yet (the widget window is created before Explorer finishes
+                // starting). UpdatePosition runs on the timer below and attaches once it appears.
+                return;
+            }
 
-            SetParent(taskbarWindowHandle, taskbarHandle); // if this window is created faster than the Taskbar is loaded, then taskbarHandle will be NULL.
-
-            CalculateAndSetPosition(taskbarHandle, taskbarWindowHandle, isMainTaskbarSelected);
+            _ = CalculateAndSetPositionAsync(taskbarHandle, taskbarWindowHandle, isMainTaskbarSelected);
         }
         catch (Exception ex)
         {
             Logger.Error(ex, "Taskbar Widget error during setup");
         }
+    }
+
+    /// <summary>
+    /// Turns the widget into a child window of the taskbar so it moves, clips and hides with it
+    /// </summary>
+    /// <returns>True when the widget is attached to the given taskbar</returns>
+    /// <remarks>
+    /// SetParent must never be called with a NULL parent: that re-parents the window to the desktop
+    /// instead of doing nothing, which leaves the widget floating on top of everything until Explorer
+    /// comes back. The old code did exactly that when the window was created before the taskbar.
+    /// </remarks>
+    private bool AttachToTaskbar(IntPtr taskbarWindowHandle, IntPtr taskbarHandle)
+    {
+        if (taskbarHandle == IntPtr.Zero)
+        {
+            Logger.Debug("The taskbar is not available yet, the widget stays unattached and will retry");
+            return false;
+        }
+
+        // This prevents the window from trying to float above the taskbar as a separate entity
+        int style = GetWindowLong(taskbarWindowHandle, GWL_STYLE);
+        style = (style & ~WS_POPUP) | WS_CHILD;
+        SetWindowLong(taskbarWindowHandle, GWL_STYLE, style);
+
+        SetParent(taskbarWindowHandle, taskbarHandle);
+
+        // SetParent returns the previous parent, which is legitimately NULL on the first attach, so the
+        // result is verified through GetParent instead.
+        if (GetParent(taskbarWindowHandle) != taskbarHandle)
+        {
+            Logger.Warn("Failed to attach the Taskbar Widget to the taskbar, will retry");
+            return false;
+        }
+
+        return true;
     }
 
     private void UpdateWindowRegion(IntPtr windowHandle, params Rect[] rects)
@@ -297,8 +352,7 @@ on_error:
             return;
         }
 
-        // Check premium status before allowing widget to be displayed
-        if (!SettingsManager.Current.TaskbarWidgetEnabled || !SettingsManager.Current.IsPremiumUnlocked)
+        if (!SettingsManager.Current.TaskbarWidgetEnabled)
             return;
 
         try
@@ -334,16 +388,18 @@ on_error:
 
             // If the Taskbar was not found during initialization or another taskbar was selected,
             // then we need to set the Taskbar as the Parent here.
-            if (GetParent(interop.Handle) != taskbarHandle)
+            if (GetParent(interop.Handle) != taskbarHandle && !AttachToTaskbar(interop.Handle, taskbarHandle))
             {
-                SetParent(interop.Handle, taskbarHandle);
+                // No taskbar to attach to yet - retry on the next timer tick instead of re-parenting
+                // the widget to the desktop.
+                return;
             }
 
             if (taskbarHandle != IntPtr.Zero && interop.Handle != IntPtr.Zero)
             {
                 Dispatcher.BeginInvoke(() =>
                 {
-                    CalculateAndSetPosition(taskbarHandle, interop.Handle, isMainTaskbarSelected);
+                    _ = CalculateAndSetPositionAsync(taskbarHandle, interop.Handle, isMainTaskbarSelected);
                 }, DispatcherPriority.Background);
             }
         }
@@ -366,7 +422,7 @@ on_error:
         _pendingAutomationTasks.Clear();
     }
 
-    private void CalculateAndSetPosition(IntPtr taskbarHandle, IntPtr taskbarWindowHandle, bool isMainTaskbarSelected)
+    private async Task CalculateAndSetPositionAsync(IntPtr taskbarHandle, IntPtr taskbarWindowHandle, bool isMainTaskbarSelected)
     {
         // Prevent overlapping updates - if a previous update is still running
         // (e.g. waiting for an automation query timeout), skip this tick.
@@ -390,7 +446,7 @@ on_error:
             {
                 // first, try to find the Taskbar.TaskbarFrame element in the XAML
                 // this should give us the actual bounds of the taskbar, excluding invisible margins on some Windows configurations
-                (bool success, Rect result) = GetTaskbarFrameRect(taskbarHandle);
+                (bool success, Rect result) = await GetTaskbarFrameRectAsync(taskbarHandle);
                 if (success)
                 {
                     taskbarRect = new RECT
@@ -431,21 +487,22 @@ on_error:
             POINT containerPos = new() { X = taskbarRect.Left, Y = taskbarRect.Top };
             ScreenToClient(taskbarHandle, ref containerPos);
 
-            // Apply using SetWindowPos (Bypassing WPF layout engine).
-            // HWND_TOP keeps this child window at the top of the taskbar's child z-order:
-            // Explorer's taskbar XAML content bridge (Windows.UI.Composition.DesktopWindowContentBridge)
-            // spans the whole taskbar and otherwise ends up above this window, hiding the widget.
-            // Do NOT pass SWP_NOZORDER here, it would turn hWndInsertAfter into a no-op.
-            SetWindowPos(taskbarWindowHandle, HWND_TOP,
+            // Apply using SetWindowPos (Bypassing WPF layout engine)
+            SetWindowPos(taskbarWindowHandle, 0,
                      containerPos.X, containerPos.Y,
                      containerWidth, containerHeight,
-                     SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS | SWP_SHOWWINDOW);
-            var wRect = PositionWidget(taskbarHandle, taskbarRect, dpiScale, isMainTaskbarSelected, isVertical);
+                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS | SWP_SHOWWINDOW);
+            var wRect = await PositionWidgetAsync(taskbarHandle, taskbarRect, dpiScale, isMainTaskbarSelected, isVertical);
             var vRect = PositionVisualizer(taskbarHandle, taskbarRect, dpiScale, isMainTaskbarSelected, isVertical);
 
             UpdateWindowRegion(taskbarWindowHandle, wRect, vRect);
 
             _lastSelectedMonitor = SettingsManager.Current.TaskbarWidgetSelectedMonitor;
+        }
+        catch (Exception ex)
+        {
+            // This method is dispatched fire-and-forget, so nothing above it can observe a throw
+            Logger.Error(ex, "Taskbar Widget error during position calculation");
         }
         finally
         {
@@ -453,7 +510,7 @@ on_error:
         }
     }
 
-    private Rect PositionWidget(IntPtr taskbarHandle, RECT taskbarRect, double dpiScale, bool isMainTaskbarSelected, bool isVertical)
+    private async Task<Rect> PositionWidgetAsync(IntPtr taskbarHandle, RECT taskbarRect, double dpiScale, bool isMainTaskbarSelected, bool isVertical)
     {
         if (!SettingsManager.Current.TaskbarWidgetEnabled)
             return Rect.Empty;
@@ -502,7 +559,7 @@ on_error:
                 try
                 {
                     // find widget button in XAML
-                    (bool found, Rect nativeWidgetRect) = GetTaskbarWidgetRect(taskbarHandle);
+                    (bool found, Rect nativeWidgetRect) = await GetTaskbarWidgetRectAsync(taskbarHandle);
 
                     // Accept only if the native Widgets button is in the start half of the taskbar
                     bool inStartHalf = isVertical
@@ -547,7 +604,7 @@ on_error:
                         try
                         {
                             // find widget button in XAML
-                            (bool found, Rect nativeWidgetRect) = GetTaskbarWidgetRect(taskbarHandle);
+                            (bool found, Rect nativeWidgetRect) = await GetTaskbarWidgetRectAsync(taskbarHandle);
 
                             // make sure it's on the right side, otherwise ignore (widget might be to the left)
                             if (found && nativeWidgetRect.Left > (taskbarRect.Left + taskbarRect.Right) / 2.0)
@@ -567,7 +624,7 @@ on_error:
                     if (!isMainTaskbarSelected)
                     {
                         // find secondary tray with automation
-                        (bool found, Rect trayRect) = GetSystemTrayRect(taskbarHandle);
+                        (bool found, Rect trayRect) = await GetSystemTrayRectAsync(taskbarHandle);
 
                         if (found)
                         {
@@ -584,7 +641,7 @@ on_error:
                         // Primary taskbar: for vertical, try automation first (more reliable on ExplorerPatcher)
                         if (isVertical)
                         {
-                            (bool trayFound, Rect trayAutomationRect) = GetSystemTrayRect(taskbarHandle);
+                            (bool trayFound, Rect trayAutomationRect) = await GetSystemTrayRectAsync(taskbarHandle);
                             if (trayFound && trayAutomationRect.Top >= taskbarRect.Top)
                             {
                                 primaryPos += (int)(trayAutomationRect.Top - taskbarRect.Top) - physicalWidth - 2;
@@ -699,10 +756,19 @@ on_error:
         return new Rect(Canvas.GetLeft(TaskbarVisualizer) * dpiScale, Canvas.GetTop(TaskbarVisualizer) * dpiScale, rectW, rectH);
     }
 
+    /// <summary>
+    /// Forwards a playback status to the widget without re-reading the media properties, so the play/pause
+    /// icon can follow a play/pause command immediately instead of waiting for the session's playback state
+    /// notification.
+    /// </summary>
+    public void SetPlaybackStatus(GlobalSystemMediaTransportControlsSessionPlaybackStatus status)
+    {
+        Widget.SetPlaybackStatus(status);
+    }
+
     public void UpdateUi(string title, string artist, BitmapImage? icon, GlobalSystemMediaTransportControlsSessionPlaybackStatus? playbackStatus, GlobalSystemMediaTransportControlsSessionPlaybackControls? playbackControls = null)
     {
-        // Check premium status - hide widget if not unlocked
-        if ((!SettingsManager.Current.TaskbarWidgetEnabled || !SettingsManager.Current.IsPremiumUnlocked))
+        if (!SettingsManager.Current.TaskbarWidgetEnabled)
         {
             if (_timer.IsEnabled) // pause timer to save resources
                 _timer.Stop();
@@ -780,10 +846,21 @@ on_error:
         Widget.RefreshAppVolumeTooltip();
     }
 
-    private (bool, Rect) GetTaskbarXamlElementRect(IntPtr taskbarHandle, ref AutomationElement? elementCache, string elementName)
+    /// <summary>
+    /// Looks up a taskbar element through UI Automation and returns its bounding rectangle.
+    /// </summary>
+    /// <remarks>
+    /// The automation calls run on a worker thread because a taskbar provider that has stopped
+    /// responding blocks whoever calls it. The await gives up after a fixed budget instead of blocking
+    /// the UI thread for the whole query, which is what the previous Wait(1000)/Wait(500) calls did.
+    /// The cached element is passed by value and returned, because async methods cannot use ref parameters.
+    /// </remarks>
+    /// <returns>The found flag, the rectangle, and the element to cache for the next call.</returns>
+    private async Task<(bool Found, Rect Rect, AutomationElement? Element)> GetTaskbarXamlElementRectAsync(
+        IntPtr taskbarHandle, AutomationElement? elementCache, string elementName)
     {
         if (taskbarHandle == IntPtr.Zero)
-            return (false, Rect.Empty);
+            return (false, Rect.Empty, elementCache);
 
         try
         {
@@ -795,85 +872,80 @@ on_error:
             if (elementCache == null)
             {
                 if (_pendingAutomationTasks.TryGetValue(elementName, out var pendingTask) && !pendingTask.IsCompleted)
-                    return (false, Rect.Empty);
+                    return (false, Rect.Empty, elementCache);
 
-                AutomationElement? found = null;
                 var findTask = Task.Run(() =>
                 {
                     var root = AutomationElement.FromHandle(taskbarHandle);
-                    found = root.FindFirst(TreeScope.Descendants,
+                    return root.FindFirst(TreeScope.Descendants,
                         new PropertyCondition(AutomationElement.AutomationIdProperty, elementName));
                 });
                 _pendingAutomationTasks[elementName] = findTask;
 
-                if (!findTask.Wait(1000))
+                try
+                {
+                    elementCache = await findTask.WaitAsync(AutomationFindTimeout);
+                }
+                catch (TimeoutException)
                 {
                     Logger.Warn("Timeout querying taskbar XAML element: " + elementName);
-                    return (false, Rect.Empty);
+                    return (false, Rect.Empty, elementCache);
                 }
-
-                // Propagate any exception from the background thread
-                findTask.GetAwaiter().GetResult();
-                elementCache = found;
             }
 
             if (elementCache == null) // widget most likely disabled
-                return (false, Rect.Empty);
+                return (false, Rect.Empty, elementCache);
 
             try
             {
                 if (_pendingAutomationTasks.TryGetValue(elementName, out var pendingTask) && !pendingTask.IsCompleted)
                 {
-                    elementCache = null;
-                    return (false, Rect.Empty);
+                    return (false, Rect.Empty, null);
                 }
 
-                var cachedElement = elementCache;
-                var boundsTask = Task.Run(() => cachedElement.Current.BoundingRectangle);
+                AutomationElement cachedElement = elementCache;
+                Task<Rect> boundsTask = Task.Run(() => cachedElement.Current.BoundingRectangle);
                 _pendingAutomationTasks[elementName] = boundsTask;
 
-                if (!boundsTask.Wait(500))
+                Rect elementRect;
+                try
+                {
+                    elementRect = await boundsTask.WaitAsync(AutomationBoundsTimeout);
+                }
+                catch (TimeoutException)
                 {
                     Logger.Warn("Timeout getting bounds for taskbar XAML element: " + elementName);
-                    elementCache = null;
-                    return (false, Rect.Empty);
+                    return (false, Rect.Empty, null);
                 }
-
-                Rect elementRect = boundsTask.GetAwaiter().GetResult();
 
                 if (elementRect == Rect.Empty) // widget shown before but most likely disabled now
                 {
-                    elementCache = null; // reset cache
-                    return (false, Rect.Empty);
+                    return (false, Rect.Empty, null); // reset cache
                 }
 
-                return (true, elementRect);
+                return (true, elementRect, elementCache);
             }
             catch (ElementNotAvailableException)
             {
                 // element became stale, reset cache
                 Logger.Warn("Taskbar XAML element became stale, resetting cache: " + elementName);
-                elementCache = null;
-                return (false, Rect.Empty);
+                return (false, Rect.Empty, null);
             }
         }
         catch (COMException ex)
         {
             Logger.Warn(ex, "COM error retrieving taskbar XAML element Rect: " + elementName);
-            elementCache = null; // reset cache on error
-            return (false, Rect.Empty);
+            return (false, Rect.Empty, null); // reset cache on error
         }
         catch (ElementNotAvailableException)
         {
             Logger.Warn("Taskbar XAML element not available, resetting cache: " + elementName);
-            elementCache = null;
-            return (false, Rect.Empty);
+            return (false, Rect.Empty, null);
         }
         catch (Exception ex)
         {
             Logger.Error(ex, "Error retrieving taskbar XAML element Rect: " + elementName);
-            elementCache = null; // reset cache on error
-            return (false, Rect.Empty);
+            return (false, Rect.Empty, null); // reset cache on error
         }
     }
 
@@ -883,19 +955,25 @@ on_error:
     /// <returns>A tuple where the first value indicates whether the widgets button was found (<see langword="true"/> if found;
     /// otherwise, <see langword="false"/>), and the second value is the bounding rectangle of the button if found, or
     /// <see cref="Rect.Empty"/> if not found.</returns>
-    private (bool, Rect) GetTaskbarWidgetRect(IntPtr taskbarHandle)
+    private async Task<(bool, Rect)> GetTaskbarWidgetRectAsync(IntPtr taskbarHandle)
     {
-        return GetTaskbarXamlElementRect(taskbarHandle, ref _widgetElement, "WidgetsButton");
+        (bool found, Rect rect, AutomationElement? element) = await GetTaskbarXamlElementRectAsync(taskbarHandle, _widgetElement, "WidgetsButton");
+        _widgetElement = element;
+        return (found, rect);
     }
 
-    private (bool, Rect) GetSystemTrayRect(IntPtr taskbarHandle)
+    private async Task<(bool, Rect)> GetSystemTrayRectAsync(IntPtr taskbarHandle)
     {
-        return GetTaskbarXamlElementRect(taskbarHandle, ref _trayElement, "SystemTrayIcon");
+        (bool found, Rect rect, AutomationElement? element) = await GetTaskbarXamlElementRectAsync(taskbarHandle, _trayElement, "SystemTrayIcon");
+        _trayElement = element;
+        return (found, rect);
     }
 
-    private (bool, Rect) GetTaskbarFrameRect(IntPtr taskbarHandle)
+    private async Task<(bool, Rect)> GetTaskbarFrameRectAsync(IntPtr taskbarHandle)
     {
-        return GetTaskbarXamlElementRect(taskbarHandle, ref _taskbarFrameElement, "TaskbarFrame");
+        (bool found, Rect rect, AutomationElement? element) = await GetTaskbarXamlElementRectAsync(taskbarHandle, _taskbarFrameElement, "TaskbarFrame");
+        _taskbarFrameElement = element;
+        return (found, rect);
     }
 
     protected override void OnClosed(EventArgs e)

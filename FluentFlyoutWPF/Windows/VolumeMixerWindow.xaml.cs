@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2024-2026 The FluentFlyout Authors
+// Copyright (c) 2024-2026 The FluentFlyout Authors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // Portions of this code are derived from:
@@ -31,7 +31,9 @@ public partial class VolumeMixerWindow : MicaWindow
     private static IntPtr _nativeOsdElement = IntPtr.Zero;
     private static int _nativeOsdOriginalExStyle;
     private CancellationTokenSource _cts;
-    private MainWindow _mainWindow;
+    // Nullable on purpose: the flyout degrades to its standalone layout instead of throwing when the
+    // main window is not around (for example while the application is shutting down).
+    private readonly MainWindow? _mainWindow;
     private readonly double _collapsedHeight = 50;
     private readonly double _normalWidth;
     private bool _isHiding = true;
@@ -49,7 +51,7 @@ public partial class VolumeMixerWindow : MicaWindow
         CustomWindowChrome.UseAeroCaptionButtons = false;
         CustomWindowChrome.GlassFrameThickness = new Thickness(0);
 
-        _mainWindow = (MainWindow)Application.Current.MainWindow;
+        _mainWindow = Application.Current?.MainWindow as MainWindow;
         _cts = new CancellationTokenSource();
         _normalWidth = Width;
 
@@ -95,16 +97,25 @@ public partial class VolumeMixerWindow : MicaWindow
             // refresh all data
             ViewModel.OnPollTick(null, EventArgs.Empty);
 
-            bool aboveMedia = SettingsManager.Current.VolumeControlAboveMediaFlyout;
+            // The media flyout is shown asynchronously: ShowMediaFlyout() awaits the media property read
+            // before it becomes visible, so on a volume hotkey it is normally still invisible although it is
+            // already on its way in. Stacking above it only needs its size and monitor, so the pending
+            // reference is accepted instead of waiting for it - waiting here would drop this flyout onto the
+            // taskbar whenever the media property read is slow.
+            bool aboveMedia = SettingsManager.Current.VolumeControlAboveMediaFlyout
+                && SettingsManager.Current.MediaFlyoutEnabled
+                && _mainWindow != null
+                && _mainWindow.GetActiveMediaSession() != null;
+
             if (aboveMedia)
             {
-                Width = _mainWindow.Width;
-                _mainWindow.OpenAnimation(this, aboveReference: _mainWindow, reserveNativeVolumeOsdSpace: true);
+                Width = _mainWindow!.Width;
+                _mainWindow.OpenAnimation(this, aboveReference: _mainWindow, reserveNativeVolumeOsdSpace: true, referenceMayBeHidden: !_mainWindow.IsVisible);
             }
             else
             {
                 Width = _normalWidth;
-                _mainWindow.OpenAnimation(this, alwaysBottom: true);
+                _mainWindow?.OpenAnimation(this, alwaysBottom: true);
             }
 
             Show();
@@ -139,7 +150,7 @@ public partial class VolumeMixerWindow : MicaWindow
 
                 bool mouseOverThis = WindowHelper.IsMouseOverWindow(this);
                 bool mouseOverMedia = SettingsManager.Current.VolumeControlAboveMediaFlyout
-                    && _mainWindow.Visibility == Visibility.Visible
+                    && _mainWindow is { Visibility: Visibility.Visible }
                     && WindowHelper.IsMouseOverWindow(_mainWindow); // sync with media flyout
 
                 if (!mouseOverThis && !mouseOverMedia)
@@ -148,12 +159,12 @@ public partial class VolumeMixerWindow : MicaWindow
 
                     mouseOverThis = WindowHelper.IsMouseOverWindow(this);
                     mouseOverMedia = SettingsManager.Current.VolumeControlAboveMediaFlyout
-                        && _mainWindow.Visibility == Visibility.Visible
+                        && _mainWindow is { Visibility: Visibility.Visible }
                         && WindowHelper.IsMouseOverWindow(_mainWindow);
 
                     if (!mouseOverThis && !mouseOverMedia)
                     {
-                        _mainWindow.CloseAnimation(this);
+                        _mainWindow?.CloseAnimation(this);
                         _isHiding = true;
                         await Task.Delay(MainWindow.getDuration());
                         if (_isHiding == false) return;
@@ -181,7 +192,7 @@ public partial class VolumeMixerWindow : MicaWindow
 
     private void OnSessionVolumeChanged(object? sender, EventArgs e)
     {
-        _mainWindow.taskbarWindow?.RefreshAppVolumeTooltip();
+        _mainWindow?.taskbarWindow?.RefreshAppVolumeTooltip();
     }
 
     protected override void OnClosed(EventArgs e)
@@ -197,11 +208,19 @@ public partial class VolumeMixerWindow : MicaWindow
     // derived from gpkgpk/HideVolumeOSD: https://github.com/gpkgpk/HideVolumeOSD
     private static void HideVolumeOsd()
     {
-        // find widget in XAML; FindWindowEx must be given the previous handle as hwndChildAfter,
-        // otherwise it returns the same first island forever and this loop never terminates
+        // find widget in XAML
+        // the cursor (hwndChildAfter) must advance on every iteration, otherwise a window that
+        // fails one of the checks below is matched again forever and this loop never returns
         IntPtr hwndXamlIsland = IntPtr.Zero, hwndOsd = IntPtr.Zero;
-        while ((hwndXamlIsland = FindWindowEx(IntPtr.Zero, hwndXamlIsland, "XamlExplorerHostIslandWindow", null)) != IntPtr.Zero)
+        const int maxCandidates = 256;
+        for (int i = 0; i < maxCandidates; i++)
         {
+            hwndXamlIsland = FindWindowEx(IntPtr.Zero, hwndXamlIsland, "XamlExplorerHostIslandWindow", null);
+            if (hwndXamlIsland == IntPtr.Zero)
+            {
+                break;
+            }
+
             hwndOsd = FindWindowEx(hwndXamlIsland, IntPtr.Zero, "Windows.UI.Composition.DesktopWindowContentBridge", "DesktopWindowXamlSource");
             if (hwndOsd == IntPtr.Zero)
             {
@@ -216,15 +235,16 @@ public partial class VolumeMixerWindow : MicaWindow
                 continue;
             }
 
-            ShowWindow(hwndInputClass, SW_RESTORE);
+            ShowWindow(hwndInputClass, 9); // SW_RESTORE
             if (GetWindowRect(hwndInputClass, out RECT rect))
             {
-                if (rect.Top == 0 && rect.Left == 0 && rect.Bottom == 0 && rect.Right == 0)
+                if (rect.Top != 0 || rect.Left != 0 || rect.Bottom != 0 || rect.Right != 0)
                 {
-                    hwndOsd = IntPtr.Zero;
+                    break;
                 }
-                else break;
             }
+
+            hwndOsd = IntPtr.Zero;
         }
 
         if (hwndOsd == IntPtr.Zero)
@@ -263,7 +283,7 @@ public partial class VolumeMixerWindow : MicaWindow
     private void AnimateExpandCollapse(bool expand)
     {
         int msDuration = MainWindow.getDuration();
-        var easing = msDuration > 0 ? _mainWindow.getEasingStyle(true) : null;
+        var easing = msDuration > 0 ? _mainWindow?.getEasingStyle(true) : null;
         var duration = new Duration(TimeSpan.FromMilliseconds(msDuration > 0 ? msDuration / 1.4 : 1));
 
         bool isTop = false;

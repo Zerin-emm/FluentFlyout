@@ -40,51 +40,11 @@
                 <TextBlock FontSize="14" FontWeight="Regular" HorizontalAlignment="Stretch" Opacity="0.75" Margin="12,0,0,0" MaxWidth="450" TextWrapping="WrapWithOverflow" Text="{DynamicResource TaskbarVisualizerDescription}" />
             </StackPanel>
 
-            <!-- Premium Status InfoBar (only shown for Store versions) -->
-            <ui:InfoBar Grid.Row="1" Title="{DynamicResource PremiumUnlockedMessage}" Severity="Success" IsClosable="True" Margin="0,0,0,3">
-                <ui:InfoBar.Style>
-                    <Style TargetType="ui:InfoBar" BasedOn="{StaticResource {x:Type ui:InfoBar}}">
-                        <Setter Property="IsOpen" Value="False" />
-                        <Style.Triggers>
-                            <MultiDataTrigger>
-                                <MultiDataTrigger.Conditions>
-                                    <Condition Binding="{Binding IsStoreVersion}" Value="True" />
-                                    <Condition Binding="{Binding IsPremiumUnlocked}" Value="True" />
-                                </MultiDataTrigger.Conditions>
-                                <Setter Property="IsOpen" Value="True" />
-                            </MultiDataTrigger>
-                        </Style.Triggers>
-                    </Style>
-                </ui:InfoBar.Style>
-            </ui:InfoBar>
-
-            <!-- Premium Locked InfoBar (only shown for Store versions without premium) -->
-            <ui:InfoBar Grid.Row="1" IsOpen="True" Severity="Warning" IsClosable="False" Margin="0,0,0,3">
-                <ui:InfoBar.Style>
-                    <Style TargetType="ui:InfoBar">
-                        <Setter Property="Visibility" Value="Collapsed" />
-                        <Style.Triggers>
-                            <MultiDataTrigger>
-                                <MultiDataTrigger.Conditions>
-                                    <Condition Binding="{Binding IsStoreVersion}" Value="True" />
-                                    <Condition Binding="{Binding IsPremiumUnlocked}" Value="False" />
-                                </MultiDataTrigger.Conditions>
-                                <Setter Property="Visibility" Value="Visible" />
-                            </MultiDataTrigger>
-                        </Style.Triggers>
-                    </Style>
-                </ui:InfoBar.Style>
-                <StackPanel Orientation="Horizontal">
-                    <TextBlock Text="{DynamicResource PremiumLockedMessage}" VerticalAlignment="Center" />
-                    <fluentflyoutcontrols:PremiumPurchaseButton Margin="12,2,0,2" />
-                </StackPanel>
-            </ui:InfoBar>
-
             <!-- GitHub Version InfoBar -->
-            <ui:InfoBar Grid.Row="1" Title="{DynamicResource PremiumGitHubMessage}" Severity="Informational" IsOpen="True" IsClosable="False" Margin="0,0,0,3" Visibility="{Binding IsStoreVersion, Converter={StaticResource BoolToCollapsedVisibleConverter}}" />
+            <ui:InfoBar Grid.Row="1" Title="{DynamicResource PremiumGitHubMessage}" Severity="Informational" IsOpen="True" IsClosable="False" Margin="0,0,0,3" />
         </Grid>
 
-        <StackPanel Opacity="{Binding IsPremiumUnlocked, Converter={StaticResource BoolToFullHalfOpacityConverter}}">
+        <StackPanel>
             <ui:CardControl x:Name="TaskbarVisualizerEnabledTitleCard" Tag="Indexable" Icon="{ui:SymbolIcon SoundWaveCircle24}" Margin="0,0,0,24">
                 <ui:CardControl.Header>
                     <StackPanel Orientation="Vertical">
@@ -95,7 +55,7 @@
                         <TextBlock Text="{DynamicResource TaskbarVisualizerEnabledDescription}" FontSize="12" Opacity="0.5" />
                     </StackPanel>
                 </ui:CardControl.Header>
-                <ui:ToggleSwitch IsChecked="{Binding TaskbarVisualizerEnabled, Mode=TwoWay}" IsEnabled="{Binding IsPremiumUnlocked}" />
+                <ui:ToggleSwitch IsChecked="{Binding TaskbarVisualizerEnabled, Mode=TwoWay}" />
             </ui:CardControl>
 
             <ui:CardControl x:Name="TaskbarVisualizerPositionTitleCard" Tag="Indexable" Icon="{ui:SymbolIcon ArrowMove24}" Margin="0,0,0,3">
@@ -104,7 +64,7 @@
                         <TextBlock Text="{DynamicResource TaskbarVisualizerPositionTitle}" FontSize="14" FontWeight="Regular" VerticalAlignment="Center" />
                     </StackPanel>
                 </ui:CardControl.Header>
-                <ComboBox SelectedIndex="{Binding TaskbarVisualizerPosition}" IsEnabled="{Binding IsPremiumUnlocked}" Style="{StaticResource DefaultComboBoxStyle}">
+                <ComboBox SelectedIndex="{Binding TaskbarVisualizerPosition}" Style="{StaticResource DefaultComboBoxStyle}">
                     <ComboBoxItem Content="{DynamicResource PositionBottomLeft}" />
                     <ComboBoxItem Content="{DynamicResource PositionBottomRight}" />
                 </ComboBox>
@@ -119,8 +79,8 @@
                         <TextBlock Text="{DynamicResource TaskbarVisualizerBarCountDescription}" FontSize="12" Opacity="0.5" />
                     </StackPanel>
                 </ui:CardControl.Header>
-                <StackPanel Orientation="Horizontal" Opacity="{Binding IsPremiumUnlocked, Converter={StaticResource BoolToFullHalfOpacityConverter}}" >
-                    <Slider Minimum="1" Maximum="20" Value="{Binding TaskbarVisualizerBarCount, Mode=TwoWay}" IsEnabled="{Binding IsPremiumUnlocked}" TickFrequency="1" IsSnapToTickEnabled="True" Width="150"
+                <StackPanel Orientation="Horizontal">
+                    <Slider Minimum="1" Maximum="20" Value="{Binding TaskbarVisualizerBarCount, Mode=TwoWay}" TickFrequency="1" IsSnapToTickEnabled="True" Width="150"
                             IsMoveToPointEnabled="True" />
                     <ui:TextBlock Text="{Binding TaskbarVisualizerBarCount}" Width="24" TextAlignment="Center" Margin="12,0,0,0" />
                 </StackPanel>
@@ -133,7 +93,7 @@
                         <TextBlock Text="{DynamicResource TaskbarVisualizerCenteredBarsDescription}" FontSize="12" Opacity="0.5" />
                     </StackPanel>
                 </ui:CardControl.Header>
-                <ui:ToggleSwitch IsChecked="{Binding TaskbarVisualizerCenteredBars, Mode=TwoWay}" IsEnabled="{Binding IsPremiumUnlocked}" />
+                <ui:ToggleSwitch IsChecked="{Binding TaskbarVisualizerCenteredBars, Mode=TwoWay}" />
             </ui:CardControl>
 
             <ui:CardExpander x:Name="TaskbarVisualizerBaselineTitleCard" Tag="Indexable" Icon="{ui:SymbolIcon LineHorizontal120}" ContentPadding="0" Margin="0,0,0,12">
@@ -143,7 +103,7 @@
                             <TextBlock Text="{DynamicResource TaskbarVisualizerBaselineTitle}" FontSize="14" FontWeight="Regular" VerticalAlignment="Center" />
                             <TextBlock Text="{DynamicResource TaskbarVisualizerBaselineDescription}" FontSize="12" Opacity="0.5" />
                         </StackPanel>
-                        <ui:ToggleSwitch Grid.Column="1" IsChecked="{Binding TaskbarVisualizerBaseline, Mode=TwoWay}" IsEnabled="{Binding IsPremiumUnlocked}" Margin="0,0,16,0" />
+                        <ui:ToggleSwitch Grid.Column="1" IsChecked="{Binding TaskbarVisualizerBaseline, Mode=TwoWay}" Margin="0,0,16,0" />
                     </Grid>
                 </ui:CardExpander.Header>
                 <StackPanel Opacity="{Binding TaskbarVisualizerBaseline, Converter={StaticResource BoolToFullHalfOpacityConverter}}">
@@ -166,9 +126,9 @@
                         <TextBlock Text="{DynamicResource TaskbarVisualizerAudioSensitivityDescription}" FontSize="12" Opacity="0.5" />
                     </StackPanel>
                 </ui:CardControl.Header>
-                <StackPanel Orientation="Horizontal" Opacity="{Binding IsPremiumUnlocked, Converter={StaticResource BoolToFullHalfOpacityConverter}}" >
+                <StackPanel Orientation="Horizontal">
                     <ui:SymbolIcon Symbol="Subtract24" Width="24" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                    <Slider Minimum="1" Maximum="3" Value="{Binding TaskbarVisualizerAudioSensitivity, Mode=TwoWay}" IsEnabled="{Binding IsPremiumUnlocked}" TickFrequency="1" TickPlacement="Both" IsSnapToTickEnabled="True" Width="150" Margin="12,0,12,0"
+                    <Slider Minimum="1" Maximum="3" Value="{Binding TaskbarVisualizerAudioSensitivity, Mode=TwoWay}" TickFrequency="1" TickPlacement="Both" IsSnapToTickEnabled="True" Width="150" Margin="12,0,12,0"
                             IsMoveToPointEnabled="True" />
                     <ui:SymbolIcon Symbol="Add24" Width="24" HorizontalAlignment="Center" VerticalAlignment="Center" />
                 </StackPanel>
@@ -183,9 +143,9 @@
                         <TextBlock Text="{DynamicResource TaskbarVisualizerAudioPeakLevelDescription}" FontSize="12" Opacity="0.5" />
                     </StackPanel>
                 </ui:CardControl.Header>
-                <StackPanel Orientation="Horizontal" Opacity="{Binding IsPremiumUnlocked, Converter={StaticResource BoolToFullHalfOpacityConverter}}" >
+                <StackPanel Orientation="Horizontal">
                     <ui:SymbolIcon Symbol="Subtract24" Width="24" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                    <Slider Minimum="1" Maximum="3" Value="{Binding TaskbarVisualizerAudioPeakLevel, Mode=TwoWay}" IsEnabled="{Binding IsPremiumUnlocked}" TickFrequency="1" TickPlacement="Both" IsSnapToTickEnabled="True" Width="150" Margin="12,0,12,0"
+                    <Slider Minimum="1" Maximum="3" Value="{Binding TaskbarVisualizerAudioPeakLevel, Mode=TwoWay}" TickFrequency="1" TickPlacement="Both" IsSnapToTickEnabled="True" Width="150" Margin="12,0,12,0"
                             IsMoveToPointEnabled="True" />
                     <ui:SymbolIcon Symbol="Add24" Width="24" HorizontalAlignment="Center" VerticalAlignment="Center" />
                 </StackPanel>
@@ -215,7 +175,7 @@
                         <TextBlock Text="{DynamicResource TaskbarVisualizerClickableDescription}" FontSize="12" Opacity="0.5" />
                     </StackPanel>
                 </ui:CardControl.Header>
-                <ui:ToggleSwitch IsChecked="{Binding TaskbarVisualizerClickable, Mode=TwoWay}" IsEnabled="{Binding IsPremiumUnlocked}" />
+                <ui:ToggleSwitch IsChecked="{Binding TaskbarVisualizerClickable, Mode=TwoWay}" />
             </ui:CardControl>
         </StackPanel>
     </StackPanel>

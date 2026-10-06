@@ -20,7 +20,9 @@ public partial class TaskbarVisualizerControl : UserControl
     private const double SmallTaskbarVisualizerHeight = 28;
 
     // reference to main window for flyout functions
-    private static readonly Visualizer visualizer = new();
+    // intentionally not readonly: DisposeVisualizer() releases the capture device, so a later
+    // re-enable has to build a fresh instance instead of reusing the disposed one
+    private static Visualizer? visualizer = new();
 
     public TaskbarVisualizerControl()
     {
@@ -28,6 +30,8 @@ public partial class TaskbarVisualizerControl : UserControl
 
         // Set DataContext for bindings
         DataContext = SettingsManager.Current;
+
+        visualizer ??= new Visualizer();
 
         if (SettingsManager.Current.TaskbarVisualizerEnabled)
         {
@@ -72,6 +76,7 @@ public partial class TaskbarVisualizerControl : UserControl
             return;
 
         visualizer.Dispose();
+        visualizer = null;
     }
 
     // TODO: The following mouse events are almost the same as the ones in TaskbarWidgetControl.xaml.cs.

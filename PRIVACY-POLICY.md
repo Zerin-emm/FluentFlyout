@@ -6,6 +6,15 @@ _We have updated our February 27, 2026 Privacy Policy to include information on 
 
 This Privacy Policy describes how your personal information is handled in FluentFlyout.
 
+> **Note for this fork:** telemetry has been removed from this build. The application no longer
+> collects or transmits usage data, so **Section 2 and the analytics described in Section 5 do not
+> apply to the code in this repository** — they are kept below only to document the upstream release.
+> The update check also no longer contacts `fluentflyout.com`: it reads the public release feed at
+> `https://github.com/Zerin-emm/FluentFlyout/releases.atom`, and it only runs when you open the
+> settings window and press the check button. That request is an anonymous HTTPS `GET` with no payload
+> about you or your machine, apart from the user agent (`FluentFlyout/<version>`); network metadata
+> (such as IP addresses) may still be logged by GitHub, as described in Section 4.
+
 ### 1. Information We Collect
 FluentFlyout does not collect, store, or process any personally identifiable information (PII) such as your name, email address, or precise location. As a background utility application, it does not require any user-specific information to function. 
 
@@ -16,12 +25,14 @@ Additionally, the platform through which you install the app (Microsoft Store) m
 FluentFlyout's website is hosted on Cloudflare Pages (https://fluentflyout.com). Cloudflare may collect additional network and HTTP traffic data automatically (see Section 4).
 
 ### 2. Telemetry and Usage Data
+_Upstream release only — removed from this fork, see the note at the top of this document._
+
 FluentFlyout collects limited, anonymous telemetry to help us maintain, optimize and improve the application.
 
 * **What we collect:** This data may include basic information about application events (such as whether a specific feature was enabled, or whether onboarding was successful).
 * **Anonymity:** This data is entirely anonymous. It does not contain any personal identifiers, names, locations, or network addresses such as IP. We cannot use this data to identify you or link it to any specific individual.
 * **Purpose:** We use this information solely to identify bugs, understand which features are most valuable to our users, and guide future development.
-* **Opt-out:** You can opt out of this anonymous data collection at any time by going to the FluentFlyout Settings menu and disabling "Anonymous Usage Data" under System.
+* **Opt-out:** You can opt out of this anonymous data collection at any time by going to the FluentFlyout Settings menu and disabling "Anonymous Usage Data" under System. (In this fork the telemetry code and its setting have been deleted outright, so there is nothing to opt out of.)
 
 ### 3. Microsoft Store Analytics & Windows Diagnostics
 Depending on your installation method and Windows settings, Microsoft may automatically collect certain diagnostic and usage data:
@@ -40,6 +51,8 @@ No tracking or fingerprinting: Cloudflare does not use tracking or cookies to co
 For more information on what Cloudflare collects, please refer to [Cloudflare's Privacy Policy](https://www.cloudflare.com/privacypolicy/).
 
 ### 5. Third-Party Services
+_Upstream release only — the analytics collection described here has been removed from this fork, see the note at the top of this document._
+
 We use Cloudflare Analytics Engine to securely collect the anonymous usage data described in Section 2. No personal data is shared with this service. They do not monetize, sell, or use your data to build advertising profiles.
 
 ### 6. Data Security

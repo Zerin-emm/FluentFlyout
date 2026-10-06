@@ -369,3 +369,7 @@ FodyWeavers.xsd
 .vscode/
 
 Website/tailwindcss.exe
+
+# Inno Setup installer output (installer\FluentFlyout.iss); the generated Setup exe is a build
+# artifact and must not be committed, while the script itself is tracked.
+installer/Output/

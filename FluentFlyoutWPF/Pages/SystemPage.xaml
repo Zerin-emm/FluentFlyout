@@ -29,7 +29,7 @@
                 <ComboBox x:Name="FlyoutSelectedMonitorComboBox" SelectedIndex="{Binding FlyoutSelectedMonitor, Mode=TwoWay}" Style="{StaticResource DefaultComboBoxStyle}">
                 </ComboBox>
             </ui:CardControl>
-            <ui:CardControl x:Name="AcrylicBlurOpacityCard" Tag="Indexable" Icon="{ui:SymbolIcon PaintBucket24}" Margin="0,0,0,3" Opacity="{Binding IsPremiumUnlocked, Converter={StaticResource BoolToFullHalfOpacityConverter}}">
+            <ui:CardControl x:Name="AcrylicBlurOpacityCard" Tag="Indexable" Icon="{ui:SymbolIcon PaintBucket24}" Margin="0,0,0,3">
                 <ui:CardControl.Header>
                     <StackPanel Orientation="Vertical">
                         <StackPanel Orientation="Horizontal">
@@ -40,7 +40,7 @@
                     </StackPanel>
                 </ui:CardControl.Header>
                 <StackPanel Orientation="Horizontal" >
-                    <Slider Minimum="0" Maximum="255" Value="{Binding AcrylicBlurOpacity, Mode=TwoWay}" IsEnabled="{Binding IsPremiumUnlocked}" TickFrequency="5" IsSnapToTickEnabled="True" Width="150"
+                    <Slider Minimum="0" Maximum="255" Value="{Binding AcrylicBlurOpacity, Mode=TwoWay}" TickFrequency="5" IsSnapToTickEnabled="True" Width="150"
                             IsMoveToPointEnabled="True" />
                     <ui:TextBlock Text="{Binding AcrylicBlurOpacity}" Width="24" TextAlignment="Center" Margin="12,0,0,0" />
                 </StackPanel>
@@ -62,10 +62,6 @@
                         <TextBlock Text="{DynamicResource AppLanguageTitle}" FontSize="14" FontWeight="Regular" VerticalAlignment="Center" />
                         <TextBlock VerticalAlignment="Center" FontSize="12" Opacity="0.5">
                                 <Run Text="{DynamicResource AppLanguageDescription}" />
-                                <Hyperlink NavigateUri="https://hosted.weblate.org/engage/fluentflyout/" RequestNavigate="StartupHyperlink_RequestNavigate" BaselineAlignment="Center"
-                                    TextDecorations="None" Foreground="{DynamicResource MicaWPF.Brushes.AccentFillColorDefault}">
-                                    <Run Text="{DynamicResource AppLanguageDescriptionLink}" /> <ui:SymbolIcon VerticalAlignment="Center" FontSize="14" Symbol="Open16" />
-                                </Hyperlink>
                         </TextBlock>
                     </StackPanel>
                 </ui:CardControl.Header>
@@ -105,15 +101,6 @@
                 </ui:CardControl.Header>
                 <ui:ToggleSwitch x:Name="StartupSwitch" Click="StartupSwitch_Click" IsChecked="{Binding Startup, Mode=TwoWay}" />
             </ui:CardControl>
-            <ui:CardControl x:Name="AnonymousUsageDataCard" Tag="Indexable" Icon="{ui:SymbolIcon Bug24}" Margin="0,0,0,3">
-                <ui:CardControl.Header>
-                    <StackPanel Orientation="Vertical">
-                        <TextBlock Text="{DynamicResource AnonymousUsageDataTitle}" FontSize="14" FontWeight="Regular" VerticalAlignment="Center" />
-                        <TextBlock Text="{DynamicResource AnonymousUsageDataDescription}" FontSize="12" Opacity="0.5" />
-                    </StackPanel>
-                </ui:CardControl.Header>
-                <ui:ToggleSwitch IsChecked="{Binding AnonymousTelemetryAllowed, Mode=TwoWay}" />
-            </ui:CardControl>
             <ui:CardControl x:Name="DisableOnFullscreenCard" Tag="Indexable" Icon="{ui:SymbolIcon ArrowMinimize24}" Margin="0,0,0,3">
                 <ui:CardControl.Header>
                     <StackPanel Orientation="Vertical">
@@ -149,7 +136,7 @@
                 </ui:CardControl.Header>
                 <ui:ToggleSwitch IsChecked="{Binding NIconSymbol, Mode=TwoWay}" />
             </ui:CardControl>
-            <ui:CardControl x:Name="HideTrayIconCard" Tag="Indexable" Icon="{ui:SymbolIcon EyeOff24}" Margin="0,0,0,3" Opacity="{Binding IsPremiumUnlocked, Converter={StaticResource BoolToFullHalfOpacityConverter}}" >
+            <ui:CardControl x:Name="HideTrayIconCard" Tag="Indexable" Icon="{ui:SymbolIcon EyeOff24}" Margin="0,0,0,3" >
                 <ui:CardControl.Header>
                     <StackPanel Orientation="Vertical">
                         <StackPanel Orientation="Horizontal">
@@ -159,7 +146,7 @@
                         <TextBlock Text="{DynamicResource HideTrayIconDescription}" FontSize="12" Opacity="0.5" />
                     </StackPanel>
                 </ui:CardControl.Header>
-                <ui:ToggleSwitch x:Name="NIconHideSwitch" IsChecked="{Binding NIconHide, Mode=TwoWay}" IsEnabled="{Binding IsPremiumUnlocked}" Click="ToggleSwitch_Click" />
+                <ui:ToggleSwitch x:Name="NIconHideSwitch" IsChecked="{Binding NIconHide, Mode=TwoWay}" Click="ToggleSwitch_Click" />
             </ui:CardControl>
 
             <!-- back up & restore section -->
@@ -174,15 +161,6 @@
                     <ui:Button Content="{DynamicResource ExportSettings}" Click="ExportButton_Click" Margin="0,0,8,0" />
                     <ui:Button Content="{DynamicResource ImportSettings}" Click="ImportButton_Click" />
                 </StackPanel>
-            </ui:CardControl>
-
-            <!-- update section -->
-            <TextBlock Text="{DynamicResource UpdatesSectionTitle}" FontSize="14" FontWeight="SemiBold" Margin="0,12,0,6" />
-            <ui:CardControl x:Name="ShowUpdateNotificationsTitleCard" Tag="Indexable" Margin="0,0,0,36" >
-                <ui:CardControl.Header>
-                    <TextBlock Text="{DynamicResource ShowUpdateNotificationsTitle}" FontSize="14" FontWeight="Regular" VerticalAlignment="Center" />
-                </ui:CardControl.Header>
-                <ui:ToggleSwitch IsChecked="{Binding ShowUpdateNotifications, Mode=TwoWay}" />
             </ui:CardControl>
 
             <!-- app filtering -->

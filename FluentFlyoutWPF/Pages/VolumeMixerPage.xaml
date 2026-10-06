@@ -95,7 +95,7 @@
                 <ui:ToggleSwitch IsChecked="{Binding VolumeMixerEnabled, Mode=TwoWay}" />
             </ui:CardControl>
             
-            <ui:CardControl x:Name="VolumeMixerHighlightTitleCard" Tag="Indexable" Icon="{ui:SymbolIcon Highlight24}" Margin="0,0,0,76" Opacity="{Binding IsPremiumUnlocked, Converter={StaticResource BoolToFullHalfOpacityConverter}}">
+            <ui:CardControl x:Name="VolumeMixerHighlightTitleCard" Tag="Indexable" Icon="{ui:SymbolIcon Highlight24}" Margin="0,0,0,76">
                 <ui:CardControl.Header>
                     <StackPanel Orientation="Vertical">
                         <StackPanel Orientation="Horizontal">
@@ -105,7 +105,7 @@
                         <TextBlock Text="{DynamicResource VolumeMixerHighlightDescription}" FontSize="12" Opacity="0.5" />
                     </StackPanel>
                 </ui:CardControl.Header>
-                <ui:ToggleSwitch IsChecked="{Binding VolumeMixerHighlightActiveApps, Mode=TwoWay}" IsEnabled="{Binding IsPremiumUnlocked}" />
+                <ui:ToggleSwitch IsChecked="{Binding VolumeMixerHighlightActiveApps, Mode=TwoWay}" />
             </ui:CardControl>
         </StackPanel>
     </StackPanel>

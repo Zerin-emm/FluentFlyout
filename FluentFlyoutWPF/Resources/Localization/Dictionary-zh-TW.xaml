@@ -76,13 +76,11 @@
     <system:String x:Key="NativeExperienceInfo">為了享受原生 Windows 11 體驗，設定應保持預設值。</system:String>
     <system:String x:Key="DisableOnFullscreenTitle">若偵測到 DirectX 全螢幕程式，停用彈出視窗</system:String>
     <system:String x:Key="DisableOnFullscreenDescription">防止彈出視窗顯示時，DirectX 獨佔全螢幕遊戲被最小化</system:String>
-    <system:String x:Key="EnjoyingAppText" xml:space="preserve">喜歡這款應用程式嗎？在 GitHub 上加星，
-或在 Microsoft Store 留下評論！</system:String>
+    <system:String x:Key="EnjoyingAppText" xml:space="preserve">喜歡這款應用程式嗎？在 GitHub 上加星！</system:String>
     <system:String x:Key="GitHubRepoLink">GitHub 儲存庫</system:String>
     <system:String x:Key="CloseButton">關閉</system:String>
     <system:String x:Key="AppLanguageTitle">應用程式語言</system:String>
     <system:String x:Key="TrayIcon_QuitOption">結束 FluentFlyout</system:String>
-    <system:String x:Key="AppLanguageDescriptionLink">Weblate</system:String>
     <system:String x:Key="LockWindow_CapsLock">Caps Lock</system:String>
     <system:String x:Key="LockWindow_NumLock">Num Lock</system:String>
     <system:String x:Key="LockWindow_ScrollLock">Scroll Lock</system:String>
@@ -103,8 +101,6 @@
     <system:String x:Key="TrayIconLeftClickOption1"> 開啟設定</system:String>
     <system:String x:Key="AnimationEasingStyleTitle">動畫緩動風格</system:String>
     <system:String x:Key="TaskbarWidgetBackgroundBlurTitle">背景模糊</system:String>
-    <system:String x:Key="PremiumFeatureTitle">高級功能</system:String>
-    <system:String x:Key="UnlockPremiumButton">解鎖高級版</system:String>
     <system:String x:Key="TaskbarWidgetCustomizationTitle">工作列小工具</system:String>
     <system:String x:Key="TaskbarWidgetDescription">一個精簡的內建小工具，常駐於您的 Windows 工作列上，讓您可即時存取媒體內容。點擊此小工具即可展開完整的媒體浮出視窗。</system:String>
     <system:String x:Key="TaskbarWidgetEnabledTitle">啟用工作列小工具</system:String>
@@ -112,20 +108,10 @@
     <system:String x:Key="TaskbarWidgetVisualIssuesWarning">如果你遇到視覺顯示方面的問題，可以調整以下選項。</system:String>
     <system:String x:Key="TaskbarWidgetPaddingTitle">自動調整 Windows 小工具邊距</system:String>
     <system:String x:Key="TaskbarWidgetPaddingDescription">如果你已啟用 Windows 小工具，請開啟此功能</system:String>
-    <system:String x:Key="TaskbarWidgetClickableTitle">當有媒體播放時，點擊以打開媒體彈出視窗</system:String>
-    <system:String x:Key="TaskbarWidgetClickableDescription">點擊工作列小工具後將會開啟媒體浮出視窗</system:String>
     <system:String x:Key="TaskbarWidgetBackgroundBlurDescription">為工作列小工具新增背景模糊效果</system:String>
     <system:String x:Key="TaskbarWidgetHideCompletelyTitle">無媒體播放時完全隱藏</system:String>
     <system:String x:Key="TaskbarWidgetHideCompletelyDescription">當沒有媒體可用時，隱藏整個小工具，而不是顯示媒體圖示</system:String>
-    <system:String x:Key="PremiumFeatureDescription" xml:space="preserve">你的一次性贊助可以幫助我維持 FluentFlyout 的運作與更新。它將立即解鎖所有高級自訂功能，永久有效。
-
-注意：作為一個開源專案，這些功能也可以透過 GitHub 的手動安裝免費使用。唯一的差別是更新與安裝需要手動操作。</system:String>
-    <system:String x:Key="PremiumLockedMessage">此功能屬於高級版的專屬</system:String>
-    <system:String x:Key="PremiumUnlockedMessage">高級版已解鎖，感謝你的支持！</system:String>
     <system:String x:Key="PremiumGitHubMessage">GitHub 或自行編譯版本的高級版已解鎖</system:String>
-    <system:String x:Key="PremiumPurchaseSuccess">高級功能已成功解鎖！</system:String>
-    <system:String x:Key="PremiumPurchaseFailed">購買失敗，請再試一次。</system:String>
-    <system:String x:Key="PremiumPurchaseCancelled">購買已取消。</system:String>
     <system:String x:Key="HideTrayIconTitle">完全隱藏系統匣圖示</system:String>
     <system:String x:Key="HideTrayIconDescription">透過啟動程式兩次來存取設定</system:String>
     <system:String x:Key="AboutPremiumTitle">關於高級版</system:String>
@@ -165,8 +151,10 @@
     <system:String x:Key="LastChecked">上次檢查更新時間：{0}</system:String>
     <system:String x:Key="CheckingForUpdates">檢查更新中......</system:String>
     <system:String x:Key="UpdateAvailableNotificationTitle">有更新可用！</system:String>
-    <system:String x:Key="UpdateAvailableNotificationMessage">有新版本（{0}） 可用。</system:String>
-    <system:String x:Key="UpdateAvailableNotificationButton">下載更新</system:String>
+    <system:String x:Key="UpdateAvailableDialogTitle">發現新版本</system:String>
+    <system:String x:Key="UpdateAvailableDialogMessage">FluentFlyout {0} 已發佈到 GitHub。請到發佈頁面下載安裝檔，直接覆蓋安裝即可。</system:String>
+    <system:String x:Key="UpdateDialogVisitButton">訪問連結</system:String>
+    <system:String x:Key="UpdateDialogLaterButton">下次一定</system:String>
     <system:String x:Key="MediaFlyoutExcludeVolumeTitle">排除音量鍵</system:String>
     <system:String x:Key="MediaFlyoutExcludeVolumeDescription">按下音量增加／降低／靜音鍵時，不顯示彈出視窗</system:String>
     <system:String x:Key="TaskbarVisualizerTitle">工作列視覺化工具</system:String>
@@ -174,8 +162,6 @@
     <system:String x:Key="TaskbarVisualizerEnabledTitle">啟用工作列視覺化工具（實驗性功能）</system:String>
     <system:String x:Key="TaskbarVisualizerPositionTitle">視覺化效果相對於工作列小工具的位置</system:String>
     <system:String x:Key="TaskbarVisualizerBarCountTitle">長條數量</system:String>
-    <system:String x:Key="TaskbarWidgetCloseableFlyoutTitle">第二次點擊時關閉浮動視窗</system:String>
-    <system:String x:Key="TaskbarWidgetCloseableFlyoutDescription">若在點擊工作列小工具時浮出視窗已開啟，則將其關閉</system:String>
     <system:String x:Key="TaskbarWidgetControlsPositionTitle">媒體控制項位置</system:String>
     <system:String x:Key="TaskbarWidgetControlsPositionDescription">選擇媒體控制鈕的顯示位置</system:String>
     <system:String x:Key="PositionLeft">靠左</system:String>
@@ -208,12 +194,8 @@
     <system:String x:Key="UseAlbumArtAccentColorTitle">將專輯封面作為主題色</system:String>
     <system:String x:Key="UseAlbumArtAccentColorDescription">部分使用者介面元素將使用專輯封面顏色，而不是系統主題顏色</system:String>
     <system:String x:Key="AppearanceBehaviorSectionTitle">外觀與行為</system:String>
-    <system:String x:Key="UpdatesSectionTitle">更新</system:String>
     <system:String x:Key="DevelopersTitle">開發者</system:String>
     <system:String x:Key="TranslatorsTitle">翻譯者</system:String>
-    <system:String x:Key="SponsorMeLink">贊助我</system:String>
-    <system:String x:Key="BuyMeCoffeeLink">請我喝杯咖啡</system:String>
-    <system:String x:Key="ShowUpdateNotificationsTitle">有更新時顯示通知</system:String>
     <system:String x:Key="BackupRestoreSectionTitle">備份與還原</system:String>
     <system:String x:Key="BackupRestoreCardTitle">將您的設置備份與還原</system:String>
     <system:String x:Key="ExportSettings">匯出設定</system:String>
@@ -257,4 +239,39 @@
     <system:String x:Key="AppFilteringPlaceholderChrome">例如：Chrome.exe</system:String>
     <system:String x:Key="AppFilteringComboBoxHint">選著一個當前正在播放媒體的應用進行添加</system:String>
     <system:String x:Key="TaskbarWidgetFixedWidthDescription">將小工具保持固定寬度，而不是調整大小以配合標題和演出者文字</system:String>
+    <!-- Keys the upstream Traditional Chinese translation was still missing; added by this fork -->
+    <system:String x:Key="OnboardingTitle">開始使用</system:String>
+    <system:String x:Key="SearchSettings">搜尋設定</system:String>
+    <system:String x:Key="MasterVolumeText">主音量</system:String>
+    <system:String x:Key="OpenMediaPlayerText">開啟媒體播放器</system:String>
+    <system:String x:Key="AppFilteringTitle">應用程式篩選</system:String>
+    <system:String x:Key="EnableAppFilteringTitle">啟用篩選</system:String>
+    <system:String x:Key="AppFilteringRulesDescription">控制哪些應用程式可以顯示媒體</system:String>
+    <system:String x:Key="AppFilteringModeTitle">篩選模式</system:String>
+    <system:String x:Key="AppFilteringModeDescription">選擇要允許還是封鎖下方列表中的應用程式</system:String>
+    <system:String x:Key="AppFilteringModeBlacklist">封鎖清單</system:String>
+    <system:String x:Key="AppFilteringModeWhitelist">允許清單</system:String>
+    <system:String x:Key="AllowedAppsTitle">允許的應用程式</system:String>
+    <system:String x:Key="AllowedAppsDescription">若此處列出了應用程式，則只會顯示它們的媒體。</system:String>
+    <system:String x:Key="AddButton">新增</system:String>
+    <system:String x:Key="RemoveButton">移除</system:String>
+    <system:String x:Key="BlockedAppsTitle">排除的應用程式</system:String>
+    <system:String x:Key="EnableNumDescription">顯示 Num Lock 鍵在何時按下</system:String>
+    <system:String x:Key="EnableScrollDescription">顯示 Scroll Lock 鍵在何時按下</system:String>
+    <system:String x:Key="TaskbarVisualizerBaselineAutoHideDescription">沒有音訊播放時自動隱藏基準線</system:String>
+    <system:String x:Key="TaskbarWidgetScrollVolumeTitle">滾動滾輪調整音量</system:String>
+    <system:String x:Key="TaskbarWidgetScrollVolumeDescription">在工作列小工具上使用滑鼠滾輪調整音量</system:String>
+    <system:String x:Key="TaskbarWidgetScrollVolumeMaster">開啟（主音量）</system:String>
+    <system:String x:Key="TaskbarWidgetScrollVolumePlayer">開啟（播放器音量）</system:String>
+    <system:String x:Key="TaskbarWidgetScrollingTextTitle">滾動文字</system:String>
+    <system:String x:Key="TaskbarWidgetScrollingTextDescription">自動滾動過長而無法完整顯示的文字</system:String>
+    <system:String x:Key="TaskbarWidgetScrollingTextLoopForeverTitle">連續滾動</system:String>
+    <system:String x:Key="TaskbarWidgetScrollingTextLoopForeverDescription">以單一方向無限循環捲動文字，而不是來回捲動。</system:String>
+    <system:String x:Key="TaskbarWidgetScrollingTextSpeedTitle">滾動速度</system:String>
+    <system:String x:Key="TaskbarWidgetScrollingTextSpeedDescription">文字捲動的速度（像素／秒）。預設為 20。</system:String>
+    <system:String x:Key="VolumeFlyoutDescription">獨立的音量控制浮出視窗，可展開為音量混音器，取代 Windows 預設的音量介面。</system:String>
+    <system:String x:Key="EnableVolumeFlyoutDescription">取代 Windows 預設的音量浮出視窗</system:String>
+    <system:String x:Key="VolumeFlyoutStayDurationTitle">音量浮窗停留時間</system:String>
+    <system:String x:Key="EnableVolumeMixerTitle">啟用音量混音器</system:String>
+    <system:String x:Key="EnableVolumeMixerDescription">個別調整每個應用程式的音量</system:String>
 </ResourceDictionary>

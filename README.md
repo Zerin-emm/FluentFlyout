@@ -1,136 +1,142 @@
 <p align="center">
 	<picture>
-		<source width="65%" alt="fluentflyout-title" media="(prefers-color-scheme: dark)" srcset="https://github.com/user-attachments/assets/daa2969f-8ad2-4832-8253-26133a50c921" />
-		<source width="65%" alt="fluentflyout-title" media="(prefers-color-scheme: light)" srcset="https://github.com/user-attachments/assets/3e75e514-b9a6-40e3-b170-af9d29a82bb4" />
-		<img width="65%" alt="fluentflyout-title" src="https://github.com/user-attachments/assets/daa2969f-8ad2-4832-8253-26133a50c921">
+		<source width="65%" alt="fluentflyout-title" media="(prefers-color-scheme: dark)" srcset="./assets/img1.png" />
+		<source width="65%" alt="fluentflyout-title" media="(prefers-color-scheme: light)" srcset="./assets/img2.png" />
+		<img width="65%" alt="fluentflyout-title" src="./assets/img1.png">
 	</picture>
 </p>
 
 <p align="center">
-	<img alt="GitHub Release" src="https://img.shields.io/github/v/release/unchihugo/FluentFlyout">
-	<img alt="Static Badge" src="https://img.shields.io/badge/downloads-500k%2B-blue?color=limegreen">
-	<a href="https://hosted.weblate.org/engage/fluentflyout/"><img src="https://hosted.weblate.org/widget/fluentflyout/svg-badge.svg" alt="Translation status"/></a>
-	<img alt="GitHub contributors" src="https://img.shields.io/github/contributors-anon/unchihugo/fluentflyout?labelColor=midnightblue&color=goldenrod">
+  <img alt="Platform" src="https://img.shields.io/badge/Platform-Windows%2011%20%7C%2010-0078D4?style=flat-square&logo=windows">
+  <img alt=".NET" src="https://img.shields.io/badge/.NET-10.0-512BD4?style=flat-square&logo=dotnet">
+  <img alt="License" src="https://img.shields.io/badge/License-GPL--3.0-blue?style=flat-square">
+  <img alt="Status" src="https://img.shields.io/badge/Fork-Enhanced%20Edition-success?style=flat-square">
 </p>
-<p align="center">
-  <strong>English</strong> | <a href="https://github.com/unchihugo/FluentFlyout/blob/master/README.zh.md">简体中文</a> | <a href="https://github.com/unchihugo/FluentFlyout/blob/master/README.nl.md">Nederlands</a> | <a href="https://github.com/unchihugo/FluentFlyout/blob/master/README.tr.md">Türkçe</a> | <a href="https://github.com/unchihugo/FluentFlyout/blob/master/README.ru.md">Русский</a> | <a href="https://github.com/unchihugo/FluentFlyout/blob/master/README.kr.md">한국어</a>
-</p>
+
 
 ---
-FluentFlyout is the modern Flyout app for Windows, built with Fluent 2 Design principles.  
-The UI seemingly blends in with Windows 11, providing you an uninterrupted, clean, and native-like experience when controlling your media, lock keys, and more.  
+FluentFlyout（增强版）是[unchihugo/FluentFlyout](https://github.com/unchihugo/FluentFlyout)的**优化分支**，本版本**发现并修复**了原版的**诸多bug**，原版bug详见[代码分析报告.md](./代码分析报告.md) 修复日志详见[修复实施记录.md](./修复实施记录.md)
 
-FluentFlyout features smooth animations, blends with your system's color themes and includes a suite of personalization settings while providing media controls, information and more in nice and modern looking popup flyouts.
+FluentFlyout 是一个简单且现代的 Windows 音量控制弹窗，基于 Fluent 2 设计原则构建。它的用户界面与 Windows 10/11 无缝融合，为您提供一个无缝、干净、原生般的媒体控制体验。  
 
-<a href="https://apps.microsoft.com/detail/9n45nsm4tnbp?referrer=appbadge&cid=GitHub_README&mode=direct">
-	<img src="https://get.microsoft.com/images/en-us%20dark.svg" width="200"/>
-</a>
+FluentFlyout 能够在一个雅观的现代化的弹窗中显示媒体控制和信息，同时与系统的颜色主题相融合，具有流畅的动画效果，还提供多种布局位置和更多个性化设置。
 
-<img alt="FluentFlyoutHero-Cinemascope" src="https://github.com/user-attachments/assets/a7c7e2db-e21b-4435-9acc-0b2c5f38eb7d" />
+[![Download from releases](https://img.shields.io/badge/Download-from%20releases-blue?style=flat-square)](https://github.com/Zerin-emm/FluentFlyout/releases/latest)
 
-## Features ✨
-- **Audio flyout: Displays Cover, Title, Artist and media controls**
-- **"Up Next" flyout: shows what's next when a song ends**
-- **Lock Keys flyout: displays the status of lock keys at a glance**
-- **Taskbar widget: shows media info directly on the Windows taskbar**
-- Native Windows-like design
-- Uses Fluent 2 components
-- Utilises Windows Mica blur
-- Supports Light and Dark mode
-- Matches your device color theme
-- Smooth animations
-- Customizable flyout positions
-- Includes Repeat All, Repeat One and Shuffle
-- Sits unobtrusively in system tray
+<img alt="FluentFlyoutHero-Cinemascope" src="./assets/img3.png" />
 
-<p align="center">
-    <a href="https://www.windowscentral.com/microsoft/windows-11/microsoft-is-too-busy-with-ai-to-fix-windows-11s-design-so-developers-stepped-up"><img height="40px" alt="Windows Central" src="https://cdn.mos.cms.futurecdn.net/pJbSHFPBawZknTYBZnj9tS-970-80.jpg.webp"></a>
-    &nbsp;&nbsp;&nbsp;
-    <a href="https://www.neowin.net/news/this-free-unofficial-app-promises-big-list-of-modern-windows-11-fluent-customization-options/"><img height="40px" alt="Neowin" src="https://upload.wikimedia.org/wikipedia/en/1/11/Neowin_Logo_1.png"></a>
-</p>
-<p align="center">
-  <em>"Windows 11 may have just gained another must-have app."</em> — <strong><a href="https://www.windowscentral.com/microsoft/windows-11/microsoft-is-too-busy-with-ai-to-fix-windows-11s-design-so-developers-stepped-up">Windows Central</a></strong><br>
-  <em>"Does a better job than what Microsoft officially offers."</em> — <strong><a href="https://www.neowin.net/news/this-free-unofficial-app-promises-big-list-of-modern-windows-11-fluent-customization-options/">Neowin</a></strong>
-</p>
+## 功能 ✨
+- **音乐弹窗：显示封面、标题、艺术家和媒体控制**
+- **“即将播放”弹窗：在歌曲结束时显示下一首曲目**
+- **锁定键弹窗：一目了然地显示锁定键的状态**
+- **任务栏小组件：直接在 Windows 任务栏上显示媒体信息**
+- 原生 Windows 风格设计
+- 使用 Fluent 2 组件
+- 采用 Windows Mica 模糊效果
+- 支持深浅色模式的切换
+- 与设备主题颜色匹配
+- 流畅的动画效果
+- 可自定义的弹窗位置
+- 包含“列表循环”、“单曲循环”和“随机播放”功能
+- 同时监听音量和媒体输入
+- 安静地驻留在系统托盘
 
-## Taskbar widget ⏯️
+## 任务栏小组件 ⏯️
 <div align="center">
-	<img height="440px" width="auto" src="https://github.com/user-attachments/assets/43963c54-e2d8-4b93-9842-482e12b2c592" />
+	<img height="440px" width="auto" src="./assets/img4.png" />
 </div>
 
 <details close>
-<summary>Video showcase</summary>
-	
+<summary>视频展示</summary>
+
 https://github.com/user-attachments/assets/bfc7666f-1d59-4cbf-8d15-3855671cb147
 
 </details>
 
-## Flyouts and more 🎵
+## 音乐弹窗 🎵
 <div align="center">
-	<img height="205px" width="auto" src="https://github.com/user-attachments/assets/4dab1c12-594a-4785-bddc-0da1783bf1c8"> <img height="205px" src="https://github.com/user-attachments/assets/b4306026-b274-418b-a39e-78877e7610a7"> 	<img height="190px" src="https://github.com/user-attachments/assets/39de69fe-54c8-4b22-880c-7f0370b8dd9c"> <img height="190px" src="https://github.com/user-attachments/assets/a25adb0e-963a-49a5-8abb-d9a288c2ad9a"> <img height="190px" src="https://github.com/user-attachments/assets/2de44e7b-7e6c-4575-bf3b-0be2f741c994">
+	<img height="205px" width="auto" src="./assets/img5.png"> <img height="205px" src="./assets/img6.png"> 	<img height="190px" src="./assets/img7.png"> <img height="190px" src="./assets/img8.png"> <img height="190px" src="./assets/img9.png">
 </div>
 <details open>
-<summary>v2.0 screenshots</summary>
+<summary>v2.0 截图</summary>
 <div align="center">
-	<img height="220px" width="auto" src="https://github.com/user-attachments/assets/e45592d5-8576-4d6a-8679-56baacccd585"> <img height="220px" width="auto" src="https://github.com/user-attachments/assets/ff2fcfab-8e24-48cf-9bdf-d35252eb3e67">
+	<img height="220px" width="auto" src="./assets/img10.png"> <img height="220px" width="auto" src="./assets/img11.png">
 </div>
 </details>
 
-## How to install 📥
-### Using Microsoft Store (recommended)
-<a href="https://apps.microsoft.com/detail/9n45nsm4tnbp?referrer=appbadge&cid=GitHub_README_2&mode=direct">
-	<img src="https://get.microsoft.com/images/en-us%20dark.svg" width="300"/>
-</a>
-  
-(Find other download options on our [download page](https://fluentflyout.com/download/))
+## 怎么下载？
+### 安装选项
 
-### Using the manual installer
-1. Go to our website's [download page](https://fluentflyout.com/download/)
-2. Download the manual installer *(GitHub release (x64))*
-3. Run the installer (**FluentFlyout_Installer.bat**) and follow the instructions. If you prefer to install without the installer, follow the instructions in the **"Using .msixbundle installer"** section below.
+[![Download from releases](https://img.shields.io/badge/Download-from%20releases-blue?style=flat-square)](https://github.com/Zerin-emm/FluentFlyout/releases/latest)
 
-### Using .msixbundle installer
-1. Find and download the **"*.cer"** file
-2. Open the certificate and press **"Install Certificate..."**
-3. On the Certificate Import Wizard, select **"Local Machine"**, press **"Next"** and grant Admin Access
-4. Select **"Place all certificates in the following store"**, then **"Browse..."**, choose **"Trusted Root Certification Authorities"** and **"OK"**
-5. Finally, press **"Next"** and then **"Finish"**. It might ask you to confirm, press **Yes**
-6. Download the **"*.msixbundle"** file
-7. The App Installer will pop up, press **"Install"**, or **"Update"** if you've installed FluentFlyout before
+下载**Innosetup**安装包
 
-## Contributing 💖
-Please feel free to contribute in any way you can! Check out [CONTRIBUTING.md](https://github.com/unchihugo/FluentFlyout/blob/master/.github/CONTRIBUTING.md) to get started.
-If you want to help with translations, please visit our [Weblate page](https://hosted.weblate.org/engage/fluentflyout/).
+**ARM64**设备 请选择FluentFlyout-Setup-x.x.x-arm64.exe格式的安装包
 
-### Translation Status
-<a href="https://hosted.weblate.org/engage/fluentflyout/">
-<img src="https://hosted.weblate.org/widget/fluentflyout/multi-auto.svg" alt="Translation status" />
-</a>
+**AMD64**设备 请选择FluentFlyout-Setup-x.x.x-x64.exe格式安装包
 
-### Thanks to our amazing team of contributors!
-<a href="https://github.com/unchihugo/fluentflyout/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=unchihugo/fluentflyout&anon=1" />
-</a>
+> 在寻找 FluentFlyout 设置吗？点击系统托盘图标来访问设置。
 
-## Sustainability & The Microsoft Store 💰
-FluentFlyout is and always will be free and open-source. You can download the latest builds from the [Releases](https://github.com/unchihugo/FluentFlyout/releases/latest) tab or compile the project yourself to access the full feature set without restrictions.
+### 问题
+- Windows 10 界面可能无法如预期显示
 
-Maintaining a project of this scale takes time and effort. To support ongoing development, the Microsoft Store version offers a convenient way to install the app and includes a few optional features unlockable via a small payment (€2.99, varies by region).
+## 编译与运行 🛠️
 
-- **Microsoft Store version:** provides automatic background updates and one-click installation. A small set of features is unlocked with a one-time purchase to help fund development.
-- **GitHub version:** Completely free, fully featured, and open-source. The only trade-off is that updates and installation must be done manually.
+### 前置条件
+- Windows 11 或 Windows 10 (22000+)
+- [.NET SDK 10.0](https://dotnet.microsoft.com/download)
 
-Thank you for your support and understanding!
+### 编译项目
+```powershell
+dotnet build "FluentFlyoutWPF\FluentFlyout.csproj" -c Release -p:Platform=x64
+```
 
-## Credits 🙌
-- [Hugo Li](https://unchihugo.github.io) - Original Developer, Microsoft Store Publisher, CN & NL Translations
-- [LiAuTraver](https://github.com/LiAuTraver) - Code Contributor (app theme switcher)
-- [AksharDP](https://github.com/AksharDP) - Code Contributor (media seekbar & duration)
-- [Hykerisme](https://github.com/Hykerisme) - CN Translation
-- [nopeless](https://github.com/nopeless) - Code Contributor (QoL features)
-- All our amazing contributors! Check the full list on our [GitHub Contributors page](https://github.com/unchihugo/FluentFlyout/graphs/contributors?all=1)
+### 运行程序
+编译完成后，可执行文件位于：
+```
+FluentFlyoutWPF\bin\x64\Release\FluentFlyout.exe
+```
 
-### Dependencies
+> 这是**框架依赖**版本（约 45 MB），目标电脑需要预先安装 [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)。
+
+### 编译免运行时的自包含版本
+如果不想让使用者额外安装 .NET 运行时，改用自包含配置（体积约 220 MB，运行时已打包在内）：
+```powershell
+dotnet build "FluentFlyoutWPF\FluentFlyout.csproj" -c Release-SelfContained -p:Platform=x64
+```
+产物路径：
+```
+FluentFlyoutWPF\bin\x64\Release-SelfContained\FluentFlyout.exe
+```
+ARM64 设备请改用：
+```powershell
+dotnet build "FluentFlyoutWPF\FluentFlyout.csproj" -c Release-SelfContained -p:Platform=ARM64 -p:RuntimeIdentifier=win-arm64
+```
+
+### 打包安装程序 📦
+安装包由 [Inno Setup 6](https://jrsoftware.org/isinfo.php) 生成，脚本位于 `installer\FluentFlyout.iss`。
+
+先构建框架依赖版本（安装包只打包 `bin\x64\Release` 里的产物，不会替你编译）：
+```powershell
+dotnet build "FluentFlyoutWPF\FluentFlyout.csproj" -c Release -p:Platform=x64
+```
+再编译脚本（把路径换成你自己的 Inno Setup 安装位置）：
+```powershell
+& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "installer\FluentFlyout.iss"
+```
+生成的安装包：
+```
+installer\Output\FluentFlyout-Setup-2.2.0.exe
+```
+
+安装包会建立开始菜单与（可选的）桌面快捷方式、写入标准的 Windows 卸载项，并保留在 `%APPDATA%\FluentFlyout` 里的设置与日志。**卸载时**会弹出对话框，由你决定是否连同设置与日志一起删除；开机自启动项则在任何情况下都会被清理。
+
+---
+
+## 致谢 🙌
+- [unchihugo/FluentFlyout](https://github.com/unchihugo/FluentFlyout) - 原始项目
+
+### 依赖
 - [CommunityToolkit.Mvvm](https://github.com/CommunityToolkit/dotnet)
 - [Dubya.WindowsMediaController](https://github.com/DubyaDude/WindowsMediaController)
 - [MicaWPF](https://github.com/Simnico99/MicaWPF)

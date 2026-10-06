@@ -3,6 +3,7 @@
 
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Media;
@@ -19,6 +20,7 @@ public static class MediaPlayerData
         public required string Title { get; set; }
         public ImageSource? Icon { get; set; }
         public int ProcessId { get; set; }
+        public DateTime LastAccessUtc { get; set; } = DateTime.UtcNow;
     }
     // cache for media player info to avoid redundant process lookups
     private static readonly ConcurrentDictionary<string, CachedMediaPlayerInfo> mediaPlayerCache = [];
@@ -30,12 +32,54 @@ public static class MediaPlayerData
     private static DateTime lastCacheTime = DateTime.MinValue;
     private const int CACHE_DURATION_SECONDS = 5;
 
+    /// <summary>
+    /// Upper bound for the caches. Entries are keyed by media player id or by window title, and window
+    /// titles are arbitrary and change constantly, so an unbounded dictionary would keep growing for
+    /// the whole lifetime of the process.
+    /// </summary>
+    private const int MaxCacheEntries = 64;
+
+    /// <summary>
+    /// Drops the least recently used entries when the cache grew past its limit.
+    /// </summary>
+    private static void PruneCache()
+    {
+        if (mediaPlayerCache.Count <= MaxCacheEntries && mediaPlayerIdVariants.Count <= MaxCacheEntries)
+            return;
+
+        var expired = mediaPlayerCache
+            .OrderByDescending(entry => entry.Value.LastAccessUtc)
+            .Skip(MaxCacheEntries)
+            .Select(entry => entry.Key)
+            .ToList();
+
+        foreach (string key in expired)
+        {
+            mediaPlayerCache.TryRemove(key, out _);
+        }
+
+        if (mediaPlayerIdVariants.Count > MaxCacheEntries)
+        {
+            // the variant map is worthless without its target entry, so drop whatever no longer resolves
+            foreach (string key in mediaPlayerIdVariants.Keys.ToList())
+            {
+                if (!mediaPlayerIdVariants.TryGetValue(key, out string? target) || !mediaPlayerCache.ContainsKey(target))
+                {
+                    mediaPlayerIdVariants.TryRemove(key, out _);
+                }
+            }
+        }
+    }
+
     public static (string, ImageSource?) GetAndCacheMediaPlayerData(string mediaPlayerId)
     {
+        PruneCache();
+
         if (mediaPlayerCache.TryGetValue(mediaPlayerId, out var cachedInfo)
             || mediaPlayerIdVariants.TryGetValue(mediaPlayerId, out var variantKey)
             && mediaPlayerCache.TryGetValue(variantKey, out cachedInfo))
         {
+            cachedInfo.LastAccessUtc = DateTime.UtcNow;
             return (cachedInfo.Title, cachedInfo.Icon);
         }
 
@@ -64,6 +108,12 @@ public static class MediaPlayerData
         // use cache to avoid frequent process enumeration
         if (cachedProcesses == null || (DateTime.Now - lastCacheTime).TotalSeconds > CACHE_DURATION_SECONDS)
         {
+            // Process objects hold an open OS handle as soon as one of their properties is read, and
+            // they only release it on Dispose (the finalizer is a fallback, not a plan). Replacing the
+            // array without disposing the previous one leaked a handle per running process every few
+            // seconds for the whole lifetime of the app.
+            DisposeCachedProcesses();
+
             cachedProcesses = Process.GetProcesses();
             lastCacheTime = DateTime.Now;
         }
@@ -257,6 +307,22 @@ public static class MediaPlayerData
         .Contains(processName, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
+    /// Disposes every <see cref="Process"/> in the process snapshot and clears the reference.
+    /// </summary>
+    private static void DisposeCachedProcesses()
+    {
+        Process[]? processes = cachedProcesses;
+        cachedProcesses = null;
+
+        if (processes == null) return;
+
+        foreach (Process process in processes)
+        {
+            process.Dispose();
+        }
+    }
+
+    /// <summary>
     /// Extracts the associated icon for a given process ID. Returns null if the process is inaccessible.
     /// </summary>
     public static ImageSource? GetAndCacheProcessIcon(int processId, string title)
@@ -274,7 +340,7 @@ public static class MediaPlayerData
                 }
             }
 
-            var process = Process.GetProcessById(processId);
+            using var process = Process.GetProcessById(processId);
             var path = process.MainModule?.FileName;
             if (path == null) return null;
 
@@ -327,22 +393,34 @@ public static class MediaPlayerData
     /// </summary>
     private static (string? Title, ImageSource? Icon) ResolveViaAppsFolder(string appUserModelId)
     {
+        object? shell = null;
+        object? folder = null;
+        object? item = null;
+
         try
         {
             var shellType = Type.GetTypeFromProgID("Shell.Application");
             if (shellType == null) return (null, null);
 
-            dynamic shell = Activator.CreateInstance(shellType)!;
-            dynamic? item = shell.NameSpace("shell:AppsFolder")?.ParseName(appUserModelId);
-            if (item == null) return (null, null);
+            shell = Activator.CreateInstance(shellType);
+            if (shell is null) return (null, null);
 
-            string name = item.Name;
+            dynamic shellApp = shell;
+            folder = shellApp.NameSpace("shell:AppsFolder");
+            if (folder is null) return (null, null);
+
+            dynamic appsFolder = folder;
+            item = appsFolder.ParseName(appUserModelId);
+            if (item is null) return (null, null);
+
+            dynamic shellItem = item;
+            string name = shellItem.Name;
             if (string.IsNullOrWhiteSpace(name)) return (null, null);
 
             // desktop apps expose their start menu shortcut target, so the icon can
             // be extracted the same way as everywhere else; packaged apps don't
             // have one and keep a null icon
-            var targetPath = item.ExtendedProperty("System.Link.TargetParsingPath") as string;
+            var targetPath = shellItem.ExtendedProperty("System.Link.TargetParsingPath") as string;
             ImageSource? icon = targetPath != null ? GetIconFromPath(targetPath) : null;
 
             return (name, icon);
@@ -351,6 +429,31 @@ public static class MediaPlayerData
         {
             // id is not registered in the apps folder, nothing we can do
             return (null, null);
+        }
+        finally
+        {
+            // these are COM RCWs - the CLR does not release them deterministically, and a busy media
+            // flyout resolves names often enough for the shells to pile up
+            ReleaseComObject(item);
+            ReleaseComObject(folder);
+            ReleaseComObject(shell);
+        }
+    }
+
+    private static void ReleaseComObject(object? comObject)
+    {
+        if (comObject == null) return;
+
+        try
+        {
+            if (Marshal.IsComObject(comObject))
+            {
+                Marshal.FinalReleaseComObject(comObject);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn(ex, "Failed to release a shell automation COM object");
         }
     }
 }

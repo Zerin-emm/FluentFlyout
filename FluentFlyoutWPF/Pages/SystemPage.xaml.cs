@@ -16,57 +16,149 @@ namespace FluentFlyoutWPF.Pages;
 public partial class SystemPage : Page
 {
     private static readonly Logger Logger = LogManager.GetCurrentClassLogger();
+
+    private const string StartupRunKeyPath = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
+    private const string StartupRunValueName = "FluentFlyout";
+
     public SystemPage()
     {
         InitializeComponent();
         DataContext = SettingsManager.Current;
         UpdateMonitorList();
+
+        // The switch is bound to the stored preference, which is not necessarily what Windows does.
+        SyncStartupState();
     }
 
     private void StartupSwitch_Click(object sender, RoutedEventArgs e)
     {
-        SetStartup(StartupSwitch.IsChecked ?? false);
+        ApplyStartupSwitch();
     }
 
-    private void SetStartup(bool enable)
+    private void ApplyStartupSwitch()
+    {
+        bool enable = StartupSwitch.IsChecked ?? false;
+        if (!SetStartup(enable))
+        {
+            // Windows refused the change, so show the state the system actually applies.
+            SyncStartupState();
+        }
+    }
+
+    /// <summary>
+    /// Applies the requested startup state by writing the per-user Run value.
+    /// </summary>
+    /// <returns>True when the requested state was applied</returns>
+    /// <remarks>
+    /// This build is unpackaged and has no package identity, so there is no startup task to use: the
+    /// HKCU Run value is the only mechanism. Writing it next to a packaged build's startup task is how
+    /// the application used to be able to start twice, which is why the packaged branch is gone.
+    /// </remarks>
+    private static bool SetStartup(bool enable)
     {
         try
         {
-            using var key = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", true);
-            if (key == null) return;
-            const string appName = "FluentFlyout";
-            var executablePath = Environment.ProcessPath;
+            using var key = Registry.CurrentUser.OpenSubKey(StartupRunKeyPath, true);
+            if (key == null)
+            {
+                Logger.Warn("The startup registry key is not accessible");
+                return false;
+            }
 
             if (enable)
             {
-                if (File.Exists(executablePath))
-                {
-                    key.SetValue(appName, executablePath);
-                }
-                else
+                var executablePath = Environment.ProcessPath;
+                if (string.IsNullOrEmpty(executablePath) || !File.Exists(executablePath))
                 {
                     throw new FileNotFoundException("Application executable not found");
                 }
+
+                key.SetValue(StartupRunValueName, executablePath);
             }
-            else
+            else if (key.GetValue(StartupRunValueName) != null)
             {
-                if (key.GetValue(appName) != null)
-                {
-                    key.DeleteValue(appName, false);
-                }
+                key.DeleteValue(StartupRunValueName, false);
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to set the startup registry value");
+            ShowStartupError(ex.Message);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Makes the stored preference match what Windows actually does
+    /// </summary>
+    /// <remarks>
+    /// The toggle is bound to a stored setting, which can disagree with reality: startup can be turned
+    /// off outside the application (Task Manager, Startup apps, group policy) and an older packaged
+    /// build could have left a Run value pointing into WindowsApps.
+    /// </remarks>
+    private static void SyncStartupState()
+    {
+        try
+        {
+            RemoveLegacyPackagedRunEntry();
+
+            bool? actual = GetStartupState();
+            if (actual.HasValue && SettingsManager.Current.Startup != actual.Value)
+            {
+                SettingsManager.Current.Startup = actual.Value;
             }
         }
         catch (Exception ex)
         {
-            MessageBox messageBox = new()
-            {
-                Title = "Error",
-                Content = $"Failed to set startup: {ex.Message}",
-                CloseButtonText = "OK",
-            };
-
-            _ = messageBox.ShowDialogAsync();
+            Logger.Error(ex, "Failed to read the startup state");
         }
+    }
+
+    private static bool? GetStartupState()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(StartupRunKeyPath, false);
+        return key?.GetValue(StartupRunValueName) != null;
+    }
+
+    /// <summary>
+    /// Deletes a leftover Run entry that points into the packaged application folder
+    /// </summary>
+    /// <remarks>
+    /// Only entries inside WindowsApps are removed, so a portable copy that a user also wants to start
+    /// is left untouched.
+    /// </remarks>
+    private static void RemoveLegacyPackagedRunEntry()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(StartupRunKeyPath, true);
+            if (key?.GetValue(StartupRunValueName) is not string runValue ||
+                !runValue.Contains(@"\WindowsApps\", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            key.DeleteValue(StartupRunValueName, false);
+            Logger.Info("Removed the legacy Run entry that pointed into WindowsApps");
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn(ex, "Failed to remove the legacy startup Run entry");
+        }
+    }
+
+    private static void ShowStartupError(string message)
+    {
+        MessageBox messageBox = new()
+        {
+            Title = "Error",
+            Content = $"Failed to set startup: {message}",
+            CloseButtonText = "OK",
+        };
+
+        _ = messageBox.ShowDialogAsync();
     }
 
     private void StartupHyperlink_RequestNavigate(object sender, System.Windows.Navigation.RequestNavigateEventArgs e)
@@ -77,9 +169,14 @@ public partial class SystemPage : Page
 
     private void ToggleSwitch_Click(object sender, RoutedEventArgs e)
     {
-        bool isChecked = (bool)NIconHideSwitch.IsChecked;
+        // IsChecked is bool?, so an indeterminate switch would throw InvalidCastException here
+        bool isChecked = NIconHideSwitch.IsChecked == true;
 
-        MainWindow mainWindow = (MainWindow)Application.Current.MainWindow;
+        if (Application.Current?.MainWindow is not MainWindow mainWindow)
+        {
+            Logger.Warn("The main window is not available, the tray icon was not changed.");
+            return;
+        }
 
         if (!isChecked)
         {
@@ -176,9 +273,21 @@ public partial class SystemPage : Page
 
                     _ = messageBox.ShowDialogAsync();
 
+                    // MainModule can be null (or throw) once the process starts shutting down, so the
+                    // path has to be captured before that, and it should never be dereferenced blindly
+                    string? executablePath = Environment.ProcessPath;
+
                     // Restart the application
                     Application.Current.Shutdown();
-                    System.Diagnostics.Process.Start(System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName);
+
+                    if (!string.IsNullOrEmpty(executablePath))
+                    {
+                        Process.Start(executablePath);
+                    }
+                    else
+                    {
+                        Logger.Warn("Could not determine the executable path, restart skipped.");
+                    }
                 }
                 catch (Exception ex)
                 {

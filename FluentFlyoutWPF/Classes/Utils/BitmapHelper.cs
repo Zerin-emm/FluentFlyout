@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2024-2026 The FluentFlyout Authors
+// Copyright (c) 2024-2026 The FluentFlyout Authors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 using FluentFlyout.Classes.Settings;
@@ -105,23 +105,52 @@ internal static class BitmapHelper
         get => _currentDominantColors ??= [];
     }
 
+    /// <summary>
+    /// Reads the raw bytes of a thumbnail stream.
+    /// </summary>
+    /// <remarks>
+    /// GSMTC has no "the artwork changed" notification, so detecting it means hashing the content, and
+    /// hashing means reading the stream. Reading it exactly once here - and then hashing and decoding
+    /// from those bytes - is what keeps a cache hit from paying for a second full read.
+    /// </remarks>
+    private static byte[]? TryReadThumbnailBytes(IRandomAccessStreamReference thumbnail)
+    {
+        try
+        {
+            using Stream stream = thumbnail.OpenReadAsync().GetAwaiter().GetResult().AsStreamForRead();
+            using MemoryStream buffer = new();
+            stream.CopyTo(buffer);
+            return buffer.ToArray();
+        }
+        catch (Exception ex)
+        {
+            Logger.Info(ex, "Failed to read the thumbnail stream");
+            return null;
+        }
+    }
+
+    private static int ComputeHashCode(byte[] bytes)
+    {
+        if (bytes.Length == 0)
+            return 0;
+
+        return BitConverter.ToInt32(SHA256.HashData(bytes), 0);
+    }
+
+    /// <summary>
+    /// Gets a content derived hash of the thumbnail, used to detect artwork changes.
+    /// </summary>
+    /// <returns>The hash, or 0 when the thumbnail could not be read.</returns>
     public static int GetStableThumbnailHash(IRandomAccessStreamReference thumbnail)
     {
         if (thumbnail == null)
             return 0;
 
-        try
-        {
-            using Stream stream = thumbnail.OpenReadAsync().GetAwaiter().GetResult().AsStreamForRead();
-            using SHA256 sha256 = SHA256.Create();
-            byte[] hashBytes = sha256.ComputeHash(stream);
-            return BitConverter.ToInt32(hashBytes, 0);
-        }
-        catch (Exception ex)
-        {
-            Logger.Info(ex, "Failed to compute thumbnail hash; falling back to object hash");
-            return thumbnail.GetHashCode();
-        }
+        byte[]? bytes = TryReadThumbnailBytes(thumbnail);
+
+        // Returning 0 (instead of thumbnail.GetHashCode()) keeps the value stable: an identity hash
+        // changed between calls for the same artwork, so it produced a different cache key every time.
+        return bytes == null ? 0 : ComputeHashCode(bytes);
     }
 
     internal static BitmapImage? GetThumbnail(IRandomAccessStreamReference? thumbnail, int maxThumbnailSize = _maxThumbnailSize)
@@ -129,7 +158,38 @@ internal static class BitmapHelper
         if (thumbnail == null)
             return null;
 
-        int hashCode = GetStableThumbnailHash(thumbnail);
+        byte[]? bytes = TryReadThumbnailBytes(thumbnail);
+        if (bytes == null)
+            return null;
+
+        return GetThumbnail(bytes, maxThumbnailSize);
+    }
+
+    /// <summary>
+    /// Gets the thumbnail hash and the decoded image from a single read of the thumbnail stream.
+    /// </summary>
+    /// <remarks>
+    /// Callers that both compare the hash against the previous one and need the image used to call
+    /// this twice, which read and hashed the same stream twice per media property change.
+    /// </remarks>
+    internal static (int HashCode, BitmapImage? Image) GetThumbnailWithHash(IRandomAccessStreamReference? thumbnail, int maxThumbnailSize = _maxThumbnailSize)
+    {
+        if (thumbnail == null)
+            return (0, null);
+
+        byte[]? bytes = TryReadThumbnailBytes(thumbnail);
+        if (bytes == null)
+            return (0, null);
+
+        return (ComputeHashCode(bytes), GetThumbnail(bytes, maxThumbnailSize));
+    }
+
+    /// <summary>
+    /// Decodes an already read thumbnail from memory.
+    /// </summary>
+    private static BitmapImage? GetThumbnail(byte[] bytes, int maxThumbnailSize)
+    {
+        int hashCode = ComputeHashCode(bytes);
 
         if (hashCode == 0)
             return null;
@@ -145,7 +205,7 @@ internal static class BitmapHelper
 
         try
         {
-            using (var imageStream = thumbnail.OpenReadAsync().GetAwaiter().GetResult().AsStreamForRead())
+            using (var imageStream = new MemoryStream(bytes, writable: false))
             {
                 // initialize the BitmapImage
                 image.BeginInit();

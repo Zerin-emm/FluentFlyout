@@ -12,7 +12,10 @@ indent_style = space
 tab_width = 4
 
 # New line preferences
-end_of_line = crlf
+# Actual repository convention: every .cs/.xaml file is checked in with LF endings. The previous
+# value (crlf) made `dotnet format --verify-no-changes` fail on every file in the project, so the
+# only quality gate in CI could never report a real problem.
+end_of_line = lf
 insert_final_newline = false
 
 #### .NET Code Actions ####

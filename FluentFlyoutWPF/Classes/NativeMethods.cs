@@ -23,7 +23,6 @@ public static partial class NativeMethods
     internal const int WS_EX_TRANSPARENT = 0x00000020;
 
     // SetWindowPos Flags
-    internal const int HWND_TOP = 0;
     internal const int HWND_TOPMOST = -1;
     internal const uint SWP_NOSIZE = 0x0001;
     internal const uint SWP_NOMOVE = 0x0002;
@@ -53,6 +52,12 @@ public static partial class NativeMethods
     internal const int WM_DISPLAYCHANGE = 0x007E;
     internal const int WM_DPICHANGED = 0x02E0;
     internal const int WM_DPICHANGED_AFTERPARENT = 0x02E3;
+
+    /// <summary>
+    /// Private message (WM_APP + 1) posted to the main window by the low-level keyboard hook, so the
+    /// real work happens on the window's message queue instead of inside the hook callback.
+    /// </summary>
+    internal const int WM_FLUENTFLYOUT_INPUT = 0x8001;
 
     // SystemParametersInfo Actions
     internal const int SPI_SETWORKAREA = 0x002F;
@@ -167,7 +172,6 @@ public static partial class NativeMethods
         public POINT ptMinPosition;
         public POINT ptMaxPosition;
         public RECT rcNormalPosition;
-        public RECT rcDevice;
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
@@ -302,7 +306,7 @@ public static partial class NativeMethods
     [LibraryImport("user32.dll")]
     internal static partial IntPtr MonitorFromWindow(IntPtr hwnd, int dwFlags);
 
-    [LibraryImport("user32.dll")]
+    [LibraryImport("user32.dll", EntryPoint = "GetWindowPlacement", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool GetWindowPlacement(IntPtr hWnd, ref WINDOWPLACEMENT lpwndpl);
 
@@ -319,6 +323,10 @@ public static partial class NativeMethods
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool DeregisterShellHookWindow(IntPtr hWnd);
+
+    [LibraryImport("user32.dll", EntryPoint = "PostMessageW", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool PostMessage(IntPtr hWnd, int Msg, IntPtr wParam, IntPtr lParam);
 
     [LibraryImport("user32.dll", EntryPoint = "RegisterWindowMessageW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
     internal static partial int RegisterWindowMessage(string lpString);

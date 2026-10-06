@@ -41,7 +41,6 @@ hides repeat, shuffle and player info</System:String>
     <System:String x:Key="CenterTitleArtistTitle">Center Title and Artist</System:String>
     <System:String x:Key="CenterTitleArtistDescription">Align text to the center instead of the left</System:String>
     <System:String x:Key="ShowMediaPlayerNameTitle">Show Media Player name</System:String>
-    <System:String x:Key="SessionSwitcherAuto">Automatic</System:String>
     <System:String x:Key="RepeatButtonTitle">Repeat Button*</System:String>
     <System:String x:Key="RepeatButtonDescription">Choose between repeat all or repeat one, increases flyout width</System:String>
     <System:String x:Key="ShuffleButtonTitle">Shuffle Button*</System:String>
@@ -102,19 +101,7 @@ hides repeat, shuffle and player info</System:String>
     <System:String x:Key="TaskbarVisualizerOutputDeviceDescription">Change what the visualizer listens to by switching FluentFlyout's output device.</System:String>
     <System:String x:Key="TaskbarVisualizerClickableTitle">Click to open Settings</System:String>
     <System:String x:Key="TaskbarVisualizerClickableDescription">Clicking the visualizer will open its settings page</System:String>
-    <System:String x:Key="PremiumFeatureTitle">Premium Feature</System:String>
-    <System:String x:Key="PremiumFeatureDescription" xml:space="preserve">Your one-time contribution helps me keep FluentFlyout alive and updated. It instantly unlocks all premium customization features, forever.
-        
-Note: As an open-source project, these features are also available for free via the manual installer on GitHub. The only trade-off is that updates and installation must be done manually.</System:String>
-    <System:String x:Key="PremiumLockedMessage">This feature is part of the premium package</System:String>
-    <System:String x:Key="PremiumUnlockedMessage">Premium features unlocked. Thank you for your support!</System:String>
-    <System:String x:Key="SupporterTitle">Supporter</System:String>
-    <System:String x:Key="SupporterDescription">Thank you!</System:String>
     <System:String x:Key="PremiumGitHubMessage">Premium features are unlocked for GitHub/self-compiled versions</System:String>
-    <System:String x:Key="UnlockPremiumButton">Unlock Premium</System:String>
-    <System:String x:Key="PremiumPurchaseSuccess">Premium unlocked successfully!</System:String>
-    <System:String x:Key="PremiumPurchaseFailed">Purchase failed. Please try again.</System:String>
-    <System:String x:Key="PremiumPurchaseCancelled">Purchase cancelled.</System:String>
     <System:String x:Key="UnlockFullExperienceText">Unlock the full FluentFlyout experience:</System:String>
     <System:String x:Key="TaskbarWidgetCustomizationPerk">Enable the Taskbar Widget and Visualizer</System:String>
     <System:String x:Key="AcrylicBlurOpacityPerk">Adjust the Acrylic blur effect</System:String>
@@ -155,8 +142,6 @@ Note: As an open-source project, these features are also available for free via 
     <System:String x:Key="LaunchOnStartupDescription">Start minimized to tray when you log in to Windows</System:String>
     <System:String x:Key="StartupAppsHyperlinkText">Startup Apps</System:String>
     <System:String x:Key="StartupAppsSettingsInfo">If this setting does not work as expected, check</System:String>
-    <System:String x:Key="AnonymousUsageDataTitle">Send Anonymous Usage Data</System:String>
-    <System:String x:Key="AnonymousUsageDataDescription">Help improve the app by sending anonymous, non-identifiable usage data</System:String>
     <System:String x:Key="AppThemeTitle">App Theme</System:String>
     <System:String x:Key="AppThemeDefault"> Windows Default</System:String>
     <System:String x:Key="AppThemeLight"> Light</System:String>
@@ -191,7 +176,6 @@ Note: As an open-source project, these features are also available for free via 
     <System:String x:Key="HomeDashboardTitle">Dashboard</System:String>
     <System:String x:Key="AppearanceBehaviorSectionTitle">Appearance &amp; behavior</System:String>
     <System:String x:Key="TrayIconSectionTitle">Tray Icon</System:String>
-    <System:String x:Key="UpdatesSectionTitle">Updates</System:String>
     <System:String x:Key="SystemConfigure">Configure</System:String>
     <System:String x:Key="AppFilteringTitle">App Filtering</System:String>
     <System:String x:Key="AppFilteringRulesDescription">Control which applications can display media</System:String>
@@ -218,16 +202,12 @@ Note: As an open-source project, these features are also available for free via 
     <System:String x:Key="AboutPremiumTitle">About Premium</System:String>
     <System:String x:Key="AboutOpenSourceLicensesTitle">Open Source Licenses</System:String>
     <System:String x:Key="AboutOpenSourceLicensesDescription">FluentFlyout is built with the following open source packages:</System:String>
-    <System:String x:Key="EnjoyingAppText" xml:space="preserve">Enjoying the app? Star it on GitHub,
-or leave a review on Microsoft Store!</System:String>
+    <System:String x:Key="EnjoyingAppText" xml:space="preserve">Enjoying the app? Star it on GitHub!</System:String>
     <System:String x:Key="GitHubRepoLink">GitHub Repository</System:String>
-    <System:String x:Key="SponsorMeLink">Sponsor me</System:String>
-    <System:String x:Key="BuyMeCoffeeLink">Buy me a coffee</System:String>
     <System:String x:Key="CloseButton">Close</System:String>
     <System:String x:Key="AppLanguageTitle">App Language</System:String>
     <System:String x:Key="AppLanguageDescription" xml:space="preserve">If your language is not listed or incomplete, it will default to English.
 You can help contribute translations on</System:String>
-    <System:String x:Key="AppLanguageDescriptionLink">Weblate</System:String>
     <System:String x:Key="LockWindow_CapsLock">Caps Lock</System:String>
     <System:String x:Key="LockWindow_NumLock">Num Lock</System:String>
     <System:String x:Key="LockWindow_ScrollLock">Scroll Lock</System:String>
@@ -250,9 +230,10 @@ You can help contribute translations on</System:String>
     <System:String x:Key="LastChecked">Last checked: {0}</System:String>
     <System:String x:Key="CheckingForUpdates">Checking...</System:String>
     <System:String x:Key="UpdateAvailableNotificationTitle">Update Available!</System:String>
-    <System:String x:Key="UpdateAvailableNotificationMessage">A new version ({0}) is available.</System:String>
-    <System:String x:Key="UpdateAvailableNotificationButton">Download Update</System:String>
-    <System:String x:Key="ShowUpdateNotificationsTitle">Show notifications for new updates</System:String>
+    <System:String x:Key="UpdateAvailableDialogTitle">Update available</System:String>
+    <System:String x:Key="UpdateAvailableDialogMessage">FluentFlyout {0} has been published on GitHub. Download the installer from the release page and install it over your current version.</System:String>
+    <System:String x:Key="UpdateDialogVisitButton">Open release page</System:String>
+    <System:String x:Key="UpdateDialogLaterButton">Not now</System:String>
     <System:String x:Key="BackupRestoreSectionTitle">Back up &amp; restore</System:String>
     <System:String x:Key="BackupRestoreCardTitle">Back up and restore your settings</System:String>
     <System:String x:Key="ExportSettings">Export Settings</System:String>
@@ -270,7 +251,6 @@ You can help contribute translations on</System:String>
     <System:String x:Key="LegacyTaskbarWidthTitle">Legacy Taskbar Width System</System:String>
     <System:String x:Key="LegacyTaskbarWidthDescription">Use the legacy Taskbar width system for Taskbar Widgets</System:String>
     <System:String x:Key="TaskbarWidgetScrollingTextTitle">Scrolling Text</System:String>
-    <System:String x:Key="TaskbarWidgetScrollingTitle">Enable Scrolling</System:String>
     <System:String x:Key="TaskbarWidgetScrollingTextDescription">Automatically scroll long text that doesn't fit</System:String>
     <System:String x:Key="TaskbarWidgetScrollingTextLoopForeverTitle">Continuous Scrolling</System:String>
     <System:String x:Key="TaskbarWidgetScrollingTextLoopForeverDescription">Infinitely loop the text in one direction instead of scrolling back and forth.</System:String>

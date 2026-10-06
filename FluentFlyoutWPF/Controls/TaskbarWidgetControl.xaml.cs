@@ -154,7 +154,7 @@ public partial class TaskbarWidgetControl : UserControl
         }
     }
 
-    public void SetMainWindow(MainWindow mainWindow)
+    public void SetMainWindow(MainWindow? mainWindow)
     {
         _mainWindow = mainWindow;
     }
@@ -571,7 +571,7 @@ public partial class TaskbarWidgetControl : UserControl
         Dispatcher.Invoke(() =>
         {
             string newTitle = !string.IsNullOrEmpty(title) ? title : "-";
-            string newArtist = artist ?? string.Empty;
+            string newArtist = !string.IsNullOrEmpty(artist) ? artist : "-";
 
             if (_actualTitle != newTitle || _actualArtist != newArtist)
             {
@@ -632,7 +632,7 @@ public partial class TaskbarWidgetControl : UserControl
             }
 
             SongTitle.Visibility = Visibility.Visible;
-            SongArtistContainer.Visibility = !_isSmallTaskbar && !_isVertical && !string.IsNullOrEmpty(_actualArtist)
+            SongArtistContainer.Visibility = !_isSmallTaskbar && !_isVertical && !string.IsNullOrEmpty(artist)
                 ? Visibility.Visible
                 : Visibility.Collapsed;
             SongInfoStackPanel.Visibility = _isVertical ? Visibility.Collapsed : Visibility.Visible;
@@ -644,6 +644,39 @@ public partial class TaskbarWidgetControl : UserControl
                 : Visibility.Collapsed;
 
             Visibility = Visibility.Visible;
+        });
+    }
+
+    /// <summary>
+    /// Updates only the play/pause icon and the paused cover overlay, leaving the song info that
+    /// <see cref="UpdateUi"/> fills in untouched. Used right after a play/pause command so the widget does
+    /// not lag behind the player's playback state notification.
+    /// </summary>
+    public void SetPlaybackStatus(GlobalSystemMediaTransportControlsSessionPlaybackStatus status)
+    {
+        _isPaused = status != GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+
+        Dispatcher.Invoke(() =>
+        {
+            if (SettingsManager.Current.TaskbarWidgetControlsEnabled)
+            {
+                PlayPauseButton.Icon = _isPaused ? new SymbolIcon(SymbolRegular.Play24, filled: true) : new SymbolIcon(SymbolRegular.Pause24, filled: true);
+            }
+
+            if (SongImage.ImageSource == null)
+                return;
+
+            if (_isPaused && SettingsManager.Current.TaskbarWidgetShowPauseOverlay)
+            { // show pause icon overlay
+                SongImagePlaceholder.Symbol = SymbolRegular.Pause24;
+                SongImagePlaceholder.Visibility = Visibility.Visible;
+                SongImage.Opacity = 0.4;
+            }
+            else
+            {
+                SongImagePlaceholder.Visibility = Visibility.Collapsed;
+                SongImage.Opacity = 1;
+            }
         });
     }
 
