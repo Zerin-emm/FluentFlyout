@@ -764,7 +764,12 @@ public partial class TaskbarWidgetControl : UserControl
     {
         if (_mainWindow == null) return;
 
-        _ = _mainWindow.TryOpenMediaPlayerAsync();
+        // Await the result instead of discarding it: "right-click does nothing" used to leave no trace
+        // anywhere, because the failure only surfaced as an error inside MediaPlayerData.
+        if (!await _mainWindow.TryOpenMediaPlayerAsync())
+        {
+            Logger.Warn("Could not open the media player for the current session");
+        }
     }
 
     private void ContextMenuSettings_Click(object sender, RoutedEventArgs e)

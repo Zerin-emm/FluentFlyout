@@ -208,45 +208,109 @@ public static class MediaPlayerData
         return cachedInfo.ProcessId > 0 ? cachedInfo.ProcessId : null;
     }
 
+    /// <summary>
+    /// Looks the cached entry up, following the id-variant indirection when needed.
+    /// </summary>
+    private static bool TryGetCachedInfo(string mediaPlayerId, out CachedMediaPlayerInfo cachedInfo)
+    {
+        if (mediaPlayerCache.TryGetValue(mediaPlayerId, out cachedInfo!))
+            return true;
+
+        if (mediaPlayerIdVariants.TryGetValue(mediaPlayerId, out string? variantKey)
+            && mediaPlayerCache.TryGetValue(variantKey, out cachedInfo!))
+            return true;
+
+        cachedInfo = null!;
+        return false;
+    }
+
+    /// <summary>
+    /// Drops everything the cache holds for one media player id, so the next lookup resolves it again.
+    /// </summary>
+    /// <remarks>
+    /// The variant map has to go with the entry: it is keyed by the raw session id and points at the
+    /// sanitized title, so leaving it behind would keep steering every later lookup at the removed entry.
+    /// </remarks>
+    private static void InvalidateCacheEntry(string mediaPlayerId)
+    {
+        foreach (var variant in mediaPlayerIdVariants.ToList())
+        {
+            if (string.Equals(variant.Key, mediaPlayerId, StringComparison.Ordinal)
+                || string.Equals(variant.Value, mediaPlayerId, StringComparison.Ordinal))
+            {
+                mediaPlayerCache.TryRemove(variant.Key, out _);
+                mediaPlayerCache.TryRemove(variant.Value, out _);
+                mediaPlayerIdVariants.TryRemove(variant.Key, out _);
+            }
+        }
+
+        mediaPlayerCache.TryRemove(mediaPlayerId, out _);
+    }
+
     public static bool TryActivateMediaPlayer(string mediaPlayerId, string? mediaTitle = null)
     {
         GetAndCacheMediaPlayerData(mediaPlayerId);
-        if (!mediaPlayerCache.TryGetValue(mediaPlayerId, out var cachedInfo)
-            && (!mediaPlayerIdVariants.TryGetValue(mediaPlayerId, out var variantKey)
-            || !mediaPlayerCache.TryGetValue(variantKey, out cachedInfo))) return false;
+        if (!TryGetCachedInfo(mediaPlayerId, out var cachedInfo)) return false;
 
         try
         {
-            using var process = Process.GetProcessById(cachedInfo.ProcessId);
-            IntPtr handle = process.MainWindowHandle;
-            if (IsBrowser(process.ProcessName)) return TryActivateBrowserTab(process.ProcessName, mediaTitle);
+            return ActivateProcess(cachedInfo.ProcessId, mediaTitle);
+        }
+        catch (ArgumentException)
+        {
+            Logger.Info("Cached media player process {0} is no longer running, resolving it again", cachedInfo.ProcessId);
+            InvalidateCacheEntry(mediaPlayerId);
 
-            if (handle == IntPtr.Zero)
+            GetAndCacheMediaPlayerData(mediaPlayerId);
+            if (!TryGetCachedInfo(mediaPlayerId, out cachedInfo)) return false;
+
+            try
             {
-                foreach (var candidate in Process.GetProcessesByName(process.ProcessName))
-                {
-                    handle = candidate.MainWindowHandle;
-                    candidate.Dispose();
-                    if (handle != IntPtr.Zero) break;
-                }
+                return ActivateProcess(cachedInfo.ProcessId, mediaTitle);
             }
-
-            if (handle != IntPtr.Zero)
+            catch (Exception ex)
             {
-                if (IsIconic(handle)) ShowWindow(handle, SW_RESTORE);
-                return SetForegroundWindow(handle);
-            }
-
-            string? path = process.MainModule?.FileName;
-            if (!string.IsNullOrWhiteSpace(path) && !IsBrowser(System.IO.Path.GetFileNameWithoutExtension(path)))
-            {
-                Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
-                return true;
+                Logger.Error(ex, "Failed to activate media player after re-resolving it");
+                return false;
             }
         }
         catch (Exception ex)
         {
             Logger.Error(ex, "Failed to activate media player");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Brings an already resolved media player process to the foreground, or starts it again.
+    /// </summary>
+    private static bool ActivateProcess(int processId, string? mediaTitle)
+    {
+        using var process = Process.GetProcessById(processId);
+        IntPtr handle = process.MainWindowHandle;
+        if (IsBrowser(process.ProcessName)) return TryActivateBrowserTab(process.ProcessName, mediaTitle);
+
+        if (handle == IntPtr.Zero)
+        {
+            foreach (var candidate in Process.GetProcessesByName(process.ProcessName))
+            {
+                handle = candidate.MainWindowHandle;
+                candidate.Dispose();
+                if (handle != IntPtr.Zero) break;
+            }
+        }
+
+        if (handle != IntPtr.Zero)
+        {
+            if (IsIconic(handle)) ShowWindow(handle, SW_RESTORE);
+            return SetForegroundWindow(handle);
+        }
+
+        string? path = process.MainModule?.FileName;
+        if (!string.IsNullOrWhiteSpace(path) && !IsBrowser(System.IO.Path.GetFileNameWithoutExtension(path)))
+        {
+            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+            return true;
         }
 
         return false;

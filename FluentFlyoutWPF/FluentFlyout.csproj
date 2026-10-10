@@ -20,7 +20,7 @@
     <Configurations>Debug;Release;Release-SelfContained</Configurations>
     <!-- The single source of truth for the app version. It is shown in the settings UI and compared
          against the newest GitHub release, so it has to be bumped for every release. -->
-    <Version>2.2.0</Version>
+    <Version>2.2.1</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- The icon of the executable itself (Explorer, taskbar, Task Manager, and the package built from
          this project). The windows set their own Icon in XAML, which is why a missing ApplicationIcon
