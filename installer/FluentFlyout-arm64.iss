@@ -20,7 +20,7 @@
 ; ============================================================================================
 
 #define MyAppName "FluentFlyout"
-#define MyAppVersion "2.2.0"
+#define MyAppVersion "2.2.1"
 #define MyAppPublisher "Zerin-emm"
 #define MyAppUrl "https://github.com/Zerin-emm/FluentFlyout"
 #define MyAppExeName "FluentFlyout.exe"
@@ -29,7 +29,7 @@
 
 ; 要打包的自包含产物目录。
 ; 注意这里与 x64 脚本的唯一区别：-p:Platform=ARM64 的输出落在 bin\ARM64\ 而不是 bin\x64\。
-#define BuildDir "..\FluentFlyoutWPF\bin\Release-SelfContained"
+#define BuildDir "..\FluentFlyoutWPF\bin\ARM64\Release-SelfContained"
 
 ; 64 位安装模式下 {autoappdata} 解析到 %APPDATA%；32 位模式下它会退回
 ; %APPDATA% 的 WOW64 重定向形态，与应用程序实际写入的路径不一致，故直接写路径。
@@ -69,6 +69,23 @@ UninstallDisplayName={#MyAppDisplayName}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern dynamic windows11
+; 覆盖安装 / 卸载时，若程序仍在运行，由 Inno 自己的机制处理（脚本里不再手写杀进程）：
+;
+;   CloseApplications —— 非静默安装时由 Windows 重启管理器（Restart Manager）在「准备安装」页
+;                        自动检测并关闭锁着待更新文件的程序；静默安装时直接关闭。
+;                        它按「谁锁着我要写的文件」判断，比按进程名强杀精确，不会误杀同名的
+;                        绿色版/开发版。
+;   CloseApplicationsFilter —— 只关心我们自己的 exe，别去枚举别的进程。
+;   RestartApplications=no —— 装完后不要自动把程序拉起来，启不启动由用户在最后一页决定。
+;
+; 这里**故意不用 AppMutex**：它虽然也能检测「程序正在运行」，但处理方式是弹一个
+; 「请先关闭正在运行的程序，然后点击确定继续」的提示框，而不是自动关闭。实测两种静默场景都会坏：
+;   - /VERYSILENT /SUPPRESSMSGBOXES → 提示框被自动当作「取消」，安装直接中止（exit 1）；
+;   - /VERYSILENT（不抑制消息框）     → 卡在提示框上等用户点击，静默部署永远不会结束。
+; 覆盖安装时 CloseApplications 已经能把程序关掉，所以 AppMutex 只会让静默安装变差。
+CloseApplications=yes
+CloseApplicationsFilter={#MyAppExeName}
+RestartApplications=no
 ; 安装包与卸载程序的界面语言：Inno Setup 6.6.1 自带的是 Chinese.isl（简体中文）。
 ; 若你的 Inno Setup 里文件名是 ChineseSimplified.isl，把下面一行改掉即可。
 [Languages]
@@ -111,6 +128,75 @@ var
   DeleteUserData: Boolean;
   DataDirPath: String;
   AskUserDataAnswered: Boolean;
+
+  { InitializeSetup 读到的上次安装目录，供 InitializeWizard 使用 }
+  PreviousInstallPath: String;
+
+{ ------------------------------------------------------------------------------------------
+  读取「上一版安装到了哪里」。
+
+  Inno 会把每次安装的信息写在 HKCU\...\Uninstall\<AppId>_is1 下，其中
+  "Inno Setup: App Path" 就是那一次的安装目录。覆盖安装时用它当默认目录，
+  用户以前如果装到了非默认位置（例如 D 盘），升级时就不会被悄悄搬到默认目录去。
+
+  取不到就返回空串，由调用方回退到 DefaultDirName。
+  ------------------------------------------------------------------------------------------ }
+function GetPreviousInstallPath(): String;
+var
+  UninstallKey: String;
+  PreviousPath: String;
+begin
+  Result := '';
+
+  { AppId 在脚本里用的是 Inno 的转义写法（以两个左花括号开头），而它展开后仍是那串原始
+    文本，直接拼进注册表路径会多出一个左花括号、从而查不到键。
+    Inno 自己算卸载键名时做了一次反转义，这里做同样的处理。 }
+  UninstallKey := '{#SetupSetting("AppId")}';
+  if Copy(UninstallKey, 1, 2) = '{{' then
+    UninstallKey := Copy(UninstallKey, 2, Length(UninstallKey) - 1);
+
+  UninstallKey := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' + UninstallKey + '_is1';
+
+  if RegQueryStringValue(HKCU, UninstallKey, 'Inno Setup: App Path', PreviousPath)
+     and (PreviousPath <> '') then
+  begin
+    { 只是"记录过"，目录可能已被用户手工删掉，那就当没装过 }
+    if DirExists(PreviousPath) then
+    begin
+      Result := PreviousPath;
+      Log('检测到已安装，将复用上次的安装目录：' + Result);
+    end
+    else
+      Log('上次的安装目录已不存在，忽略：' + PreviousPath);
+  end
+  else
+    Log('未检测到已安装记录，使用默认安装目录');
+end;
+
+{ ------------------------------------------------------------------------------------------
+  记录上一版装在哪里，供 InitializeWizard 改写默认目录用。
+
+  必须在 InitializeSetup 里读（此时还没有 WizardForm，不能直接改 DirEdit），
+  而 InitializeSetup 返回 False 会中止安装，所以这里只读、不弹任何界面。
+  ------------------------------------------------------------------------------------------ }
+function InitializeSetup(): Boolean;
+begin
+  PreviousInstallPath := GetPreviousInstallPath();
+  Result := True;
+end;
+
+{ ------------------------------------------------------------------------------------------
+  把「选择安装位置」页的默认目录改成上次的安装目录。
+
+  放在 InitializeWizard 而不是 InitializeSetup，因为 WizardForm 到这里才存在。
+  ------------------------------------------------------------------------------------------ }
+procedure InitializeWizard();
+begin
+  { 静默安装（/SILENT、/VERYSILENT）时不要去动 DirEdit：
+    Inno 已经把 /DIR= 或默认目录写好了，改动它会覆盖调用方的显式指定。 }
+  if (PreviousInstallPath <> '') and (not WizardSilent) then
+    WizardForm.DirEdit.Text := PreviousInstallPath;
+end;
 
 { ------------------------------------------------------------------------------------------
   卸载时删除开机自启动项。
@@ -199,6 +285,7 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then
   begin
+    { 卸载同样不自己杀进程：CloseApplications 会让重启管理器在需要时关闭占用文件的程序 }
     DataDirPath := ExpandConstant('{#AppDataDir}');
     AskAboutUserData();
     RemoveStartupEntry();
