@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+    <!-- An analyzer is loaded by the compiler process, not by the application, so its architecture has to
+         match Roslyn's host - never the platform of the app being built. `-p:Platform=ARM64` (the ARM64
+         self-contained build) otherwise propagates into this project, emits an ARM64 PE, and the x64
+         compiler silently refuses to load it (CS8034). The generator then produces no source at all, which
+         surfaces far away as "error CS0103: 'SearchItems' does not exist" in SettingsWindow.
+         AnyCPU is the correct target for a netstandard2.0 analyzer in every configuration. -->
+    <PlatformTarget>AnyCPU</PlatformTarget>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.8.0" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" Version="3.3.4" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- EnforceExtendedAnalyzerRules makes RS2008 require release tracking for the diagnostics this
+         generator reports, so the two rules it can emit are declared here. -->
+    <AdditionalFiles Include="AnalyzerReleases.Unshipped.md" />
+  </ItemGroup>
+</Project>

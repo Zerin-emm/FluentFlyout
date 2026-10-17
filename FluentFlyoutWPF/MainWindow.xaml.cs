@@ -1,0 +1,2716 @@
+// Copyright (c) 2024-2026 The FluentFlyout Authors
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+using FluentFlyout.Classes;
+using FluentFlyout.Classes.Settings;
+using FluentFlyout.Classes.Utils;
+using FluentFlyout.Controls;
+using FluentFlyout.Windows;
+using FluentFlyoutWPF.Classes;
+using FluentFlyoutWPF.Classes.Services;
+using FluentFlyoutWPF.Classes.Utils;
+using FluentFlyoutWPF.ViewModels;
+using FluentFlyoutWPF.Windows;
+using MicaWPF.Controls;
+using MicaWPF.Core.Extensions;
+using Microsoft.Win32;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Input;
+using System.Windows.Interop;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Threading;
+using Windows.Media.Control;
+using static FluentFlyout.Classes.NativeMethods;
+using static FluentFlyoutWPF.Classes.Utils.MonitorUtil;
+using static WindowsMediaController.MediaManager;
+
+
+namespace FluentFlyoutWPF;
+
+public partial class MainWindow : MicaWindow
+{
+    private static readonly NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
+
+    private int WM_TASKBARCREATED, WM_SHELLHOOK;
+
+    private IntPtr _hookId = IntPtr.Zero;
+    private LowLevelKeyboardProc _hookProc;
+
+    /// <summary>
+    /// The main window's HWND, created early with WindowInteropHelper.EnsureHandle().
+    /// It is the target for the shell hook registration and for the messages the keyboard hook posts.
+    /// </summary>
+    private IntPtr _windowHandle = IntPtr.Zero;
+
+    private CancellationTokenSource cts; // to close the flyout after a certain time
+    // Auto-hide countdown for the media flyout. This replaces the old watchdog loop that woke up every
+    // 100 ms for as long as the flyout was visible: the countdown now runs once per Duration and is
+    // re-armed on its own when the pointer turns out to be over the flyout, or by MicaWindow_MouseEnter.
+    private CancellationTokenSource? _mediaFlyoutAutoHideCts;
+    private long _lastFlyoutTime = 0;
+
+    public readonly WindowsMediaController.MediaManager mediaManager = new();
+
+    // for detecting changes in settings (lazy way)
+    // These are seeded from the restored settings right after SettingsManager.RestoreSettings() in the
+    // constructor. They must not be initialized from SettingsManager.Current in the field initializers:
+    // those run before RestoreSettings(), so every cached value used to be the default one instead of
+    // the user's - the "did anything change?" comparisons were reading a cache that was never in sync.
+    private int _position;
+    private bool _layout;
+    private bool _repeatEnabled;
+    private bool _shuffleEnabled;
+    private bool _playerInfoEnabled;
+    private bool _centerTitleArtist;
+    private bool _seekBarEnabled;
+    private bool _alwaysDisplay;
+    private bool _mediaSessionSupportsSeekbar = false; // default off to handle initialization
+    private bool _acrylicEnabled = false; // default off to handle initialization
+    // The effective (system-override-resolved) theme the acrylic tint was last applied for. Comparing
+    // the AppTheme *setting* instead never noticed an automatic light/dark switch while the setting is
+    // "system", so the tint kept the colors of the previous theme.
+    private Wpf.Ui.Appearance.ApplicationTheme _appliedTheme = Wpf.Ui.Appearance.ApplicationTheme.Light;
+
+    static Mutex singleton = new Mutex(true, "FluentFlyout"); // to prevent multiple instances of the app
+    private NextUpWindow? nextUpWindow = null; // to prevent multiple instances of NextUpWindow
+    private string currentTitle = ""; // to prevent NextUpWindow from showing the same song
+
+    private readonly int _seekbarUpdateInterval = 300;
+    private readonly Timer _positionTimer;
+    private bool _isActive;
+    private bool _isDragging;
+    private bool _isHiding = true;
+
+    private LockWindow? lockWindow;
+    private DateTime _lastSelfUpdateTimestamp = DateTime.MinValue;
+
+    internal TaskbarWindow? taskbarWindow;
+
+    private VolumeMixerWindow? volumeMixerWindow;
+
+    private readonly DispatcherTimer _displayRefreshTimer;
+    // Every reason that arrived inside the debounce window, so a burst of display messages is reported
+    // in full instead of only the last one.
+    private readonly List<string> _pendingDisplayRefreshReasons = [];
+    private bool _displayRefreshInProgress;
+    private int _isCleaningUp; // 0 = running, 1 = cleanup started; int so the guard can be swapped atomically
+
+    // Subscriptions that keep the acrylic tint of the flyout in step with the theme, DWM and sleep state.
+    // See ReapplyMediaFlyoutTint for why the tint cannot simply be "detected as changed".
+    private Wpf.Ui.Appearance.ThemeChangedEvent? _applicationThemeChangedHandler;
+    private PowerModeChangedEventHandler? _powerModeChangedHandler;
+    private SessionSwitchEventHandler? _sessionSwitchHandler;
+
+    internal static volatile bool ExplorerRestarting = false;
+
+    public MainWindow()
+    {
+        DataContext = SettingsManager.Current;
+        WindowHelper.SetNoActivate(this); // prevents some fullscreen apps from minimizing
+        InitializeComponent();
+        WindowHelper.SetTopmost(this); // more prevention of fullscreen apps minimizing
+
+        _displayRefreshTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromMilliseconds(1000)
+        };
+        _displayRefreshTimer.Tick += DisplayRefreshTimer_Tick;
+
+        if (!singleton.WaitOne(TimeSpan.Zero, true)) // if another instance is already running, close this one
+        {
+            // Signal the existing instance to open settings
+            Task.Run(() =>
+            {
+                try
+                {
+                    using (EventWaitHandle settingsEvent = new EventWaitHandle(false, EventResetMode.AutoReset, "FluentFlyout_OpenSettings"))
+                    {
+                        settingsEvent.Set();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error(ex, "Failed to signal existing instance");
+                }
+            });
+
+            Environment.Exit(0);
+        }
+
+        Logger.Info("Starting FluentFlyout MainWindow");
+
+        // in the existing instance, listen for the signal to open settings
+        Task.Run(() =>
+        {
+            try
+            {
+                using (EventWaitHandle settingsEvent = new EventWaitHandle(false, EventResetMode.AutoReset, "FluentFlyout_OpenSettings"))
+                {
+                    while (true)
+                    {
+                        settingsEvent.WaitOne();
+                        Application.Current.Dispatcher.Invoke(() => { SettingsWindow.ShowInstance(); });
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex, "Settings event listener error");
+            }
+        });
+
+        try
+        {
+            SettingsManager.RestoreSettings();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed to restore settings: {ex.Message}");
+            Logger.Error(ex, "Failed to restore settings");
+        }
+
+        // RestoreSettings may replace SettingsManager.Current instance, so rebind DataContext.
+        DataContext = SettingsManager.Current;
+
+        // Seed the change-detection cache from the settings that were just restored, otherwise the
+        // first UpdateUI would compare the user's values against defaults the app never showed.
+        SyncSettingsSnapshot();
+
+        if (SettingsManager.Current.Startup == true) // add to startup programs if enabled, needs improvement
+        {
+            RegistryKey? key = Registry.CurrentUser.OpenSubKey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", true);
+            string? executablePath = Environment.ProcessPath;
+            if (key != null && executablePath != null)
+                key.SetValue("FluentFlyout", executablePath);
+        }
+
+        // display tray icon if enabled
+        if (!SettingsManager.Current.NIconHide)
+        {
+            nIcon.Visibility = Visibility.Visible;
+        }
+
+        cts = new CancellationTokenSource();
+
+        // The theme has to be in place before the media manager can raise its first event: the Next-up
+        // flyout is created from that event and paints its acrylic tint from the theme's background brush,
+        // which is still the light one until ApplySavedTheme runs from Loaded - too late for that flyout.
+        ThemeManager.ApplySavedThemeEarly();
+
+        mediaManager.Start();
+
+        _hookProc = HookCallback;
+        _hookId = SetHook(_hookProc);
+
+        WindowStartupLocation = WindowStartupLocation.Manual;
+        Left = -Width - 20; // workaround for window appearing on the screen before the animation starts
+        CustomWindowChrome.CaptionHeight = 0; // hide the title bar
+
+        mediaManager.OnAnyMediaPropertyChanged += MediaManager_OnAnyMediaPropertyChanged;
+        mediaManager.OnAnyPlaybackStateChanged += CurrentSession_OnPlaybackStateChanged;
+        mediaManager.OnAnyTimelinePropertyChanged += MediaManager_OnAnyTimelinePropertyChanged;
+        mediaManager.OnAnySessionClosed += MediaManager_OnAnySessionClosed;
+
+        WM_TASKBARCREATED = RegisterWindowMessage("TaskbarCreated");
+        WM_SHELLHOOK = RegisterWindowMessage("SHELLHOOK");
+
+        // The HWND is normally created by Show(), which happens after this constructor returns, so
+        // WindowInteropHelper.Handle would still be IntPtr.Zero here - and RegisterShellHookWindow()
+        // would silently fail on a null handle, leaving the whole HSHELL_APPCOMMAND path dead.
+        // EnsureHandle() creates the real handle now; the keyboard hook also posts its messages to it.
+        _windowHandle = new WindowInteropHelper(this).EnsureHandle();
+        if (!RegisterShellHookWindow(_windowHandle))
+        {
+            Logger.Warn("Failed to register the shell hook window - media keys will rely on the keyboard hook only");
+        }
+
+        _positionTimer = new Timer(SeekbarUpdateUi, null, Timeout.Infinite, Timeout.Infinite);
+        if (_seekBarEnabled && GetActiveMediaSession() is { } session)
+        {
+            UpdateSeekbarCurrentDuration(session.ControlSession.GetTimelineProperties().Position);
+        }
+
+        string previousVersion = SettingsManager.Current.LastKnownVersion;
+
+        // apply other things on new thread
+        Dispatcher.Invoke(() =>
+        {
+            // Localization has to be applied before any window is constructed: OnboardingWindow builds its
+            // view model in a field initializer, and OnboardingViewModel snapshots its strings from the
+            // resource dictionaries in a property initializer, so a window created while only the en-US
+            // base dictionary is loaded keeps English step titles and perk lines for its whole lifetime.
+            LocalizationManager.ApplyLocalization();
+
+            // show onboarding to new users (no previous version stored = user has never run the app before)
+            if (string.IsNullOrEmpty(previousVersion))
+            {
+                OnboardingWindow.ShowInstance();
+            }
+
+            SettingsManager.Current.LastKnownVersion = AppVersion.CurrentTag;
+
+            Logger.Info($"Current version: {SettingsManager.Current.LastKnownVersion}");
+
+            Notifications.ShowFirstOrUpdateNotification(previousVersion, SettingsManager.Current.LastKnownVersion);
+            FlowDirection = SettingsManager.Current.FlowDirection;
+        });
+    }
+
+    public bool IsSessionAllowed(MediaSession? session)
+    {
+        if (session == null) return false;
+        if (!SettingsManager.Current.AppFilteringEnabled) return true;
+
+        string appId = session.Id ?? string.Empty;
+        string appName = MediaPlayerData.GetAndCacheMediaPlayerData(appId).Item1 ?? appId;
+
+        if (SettingsManager.Current.AppFilteringMode == 0) // Blacklist mode
+        {
+            if (SettingsManager.Current.BlockedApps != null &&
+                SettingsManager.Current.BlockedApps.Any(b => MatchesFilterEntry(b, appName, appId)))
+                return false;
+
+            return true;
+        }
+        else // Whitelist mode
+        {
+            if (SettingsManager.Current.AllowedApps != null &&
+                SettingsManager.Current.AllowedApps.Any(a => MatchesFilterEntry(a, appName, appId)))
+                return true;
+
+            return false;
+        }
+    }
+
+    // display names are matched in full: entries always hold a whole app name, and a substring match let one entry
+    // swallow others (blocking "Amazon Music" also blocked "Amazon Music SMTC Bridge"). the session id keeps substring
+    // matching so an entry can still target a whole package or publisher
+    private static bool MatchesFilterEntry(string entry, string appName, string appId)
+    {
+        if (string.IsNullOrWhiteSpace(entry)) return false; // an empty entry would match every session
+
+        return appName.Equals(entry, StringComparison.OrdinalIgnoreCase) || appId.Contains(entry, StringComparison.OrdinalIgnoreCase);
+    }
+
+    public MediaSession? GetActiveMediaSession()
+    {
+        var validSessions = mediaManager.CurrentMediaSessions.Values.Where(IsSessionAllowed).ToList();
+
+        if (validSessions.Count == 0) return null;
+
+        var focused = mediaManager.GetFocusedSession();
+        if (focused != null && validSessions.Any(s => s.Id == focused.Id))
+            return focused;
+
+        return validSessions.FirstOrDefault();
+    }
+
+    public float? GetActiveMediaAppVolume()
+    {
+        if (volumeMixerWindow?.ViewModel is not { } volumeMixerViewModel ||
+            GetActiveMediaSession() is not { } activeSession)
+            return null;
+
+        int? processId = MediaPlayerData.GetAndCacheProcessId(activeSession.Id);
+        return processId.HasValue
+            ? volumeMixerViewModel.Sessions.FirstOrDefault(session => session.ProcessId == processId.Value)?.Volume
+            : null;
+    }
+
+    public void AdjustTaskbarVolume(float delta)
+    {
+        if (volumeMixerWindow?.ViewModel is not { } volumeMixerViewModel) return;
+
+        switch (SettingsManager.Current.TaskbarWidgetScrollVolumeMode)
+        {
+            // 0 = disabled, 1 = master volume, 2 = active media session
+            case 1:
+                bool success = volumeMixerViewModel.TryAdjustMasterVolume(delta);
+
+                if (success && SettingsManager.Current.VolumeControlEnabled)
+                    // The wheel never summons the media flyout, so the volume flyout must not reserve
+                    // space for it either (that left it floating above an empty gap).
+                    volumeMixerWindow?.ShowFlyout(mediaFlyoutExpected: false);
+                break;
+
+            case 2:
+                if (GetActiveMediaSession() is not { } activeSession) return;
+
+                int? processId = MediaPlayerData.GetAndCacheProcessId(activeSession.Id);
+                if (processId.HasValue)
+                {
+                    volumeMixerViewModel.TryAdjustSessionVolume(processId.Value, delta);
+                }
+                break;
+        }
+    }
+
+    public void RefreshFilteredMedia()
+    {
+        _ = UpdateTaskbarAsync();
+
+        if (IsVisible)
+        {
+            var activeSession = GetActiveMediaSession();
+
+            // UpdateUI handles a null value internally so we haven't checked for null here.
+            // Discarded on purpose: this is called from the UI thread (page toggles, tray menu), and the
+            // read it awaits must not block that thread.
+            _ = UpdateUIAsync(activeSession);
+
+            if (activeSession != null)
+            {
+                HandlePlayBackState(activeSession.ControlSession.GetPlaybackInfo()?.PlaybackStatus);
+            }
+            else
+            {
+                HandlePlayBackState(GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed);
+            }
+        }
+    }
+
+    public async Task<bool> TrySkipPreviousAsync()
+    {
+        try
+        {
+            var focusedSession = GetActiveMediaSession();
+            if (focusedSession == null) return false;
+            return await focusedSession.ControlSession.TrySkipPreviousAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to skip to the previous track");
+            return false;
+        }
+    }
+
+    public async Task<bool> TryTogglePlayPauseAsync()
+    {
+        try
+        {
+            var focusedSession = GetActiveMediaSession();
+            if (focusedSession == null) return false;
+
+            var sessionId = focusedSession.Id;
+            var reportedStatus = focusedSession.ControlSession.GetPlaybackInfo()?.PlaybackStatus;
+            var currentStatus = ResolvePlaybackStatus(sessionId, reportedStatus);
+
+            if (!await focusedSession.ControlSession.TryTogglePlayPauseAsync())
+                return false;
+
+            if (currentStatus == null)
+            {
+                // Windows reported no playback status at all, so there is nothing to base an optimistic icon
+                // on: leave the icon to the session's notifications and to the reconciliation read below.
+                _ = ReconcilePlaybackStatusAsync(focusedSession, ++_playbackStatusGeneration);
+                return true;
+            }
+
+            // Windows reports a new playback state only through the session's playback state change event,
+            // and some players/apps report it seconds late (or not at all: the media session library offers
+            // ForceUpdate() exactly because notifications can go missing, and that call does not even re-read
+            // the playback status). Without this the play/pause icon kept showing the old symbol until the
+            // next notification arrived. The new state is derived from the status the command acted on - not
+            // from what Windows reports at this moment, because after a rapid pair of commands that report is
+            // still the status from before the first one and would flip the icon the wrong way.
+            var commanded = currentStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing
+                ? GlobalSystemMediaTransportControlsSessionPlaybackStatus.Paused
+                : GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+
+            int generation = ++_playbackStatusGeneration;
+
+            _commandedPlaybackStatusSessionId = sessionId;
+            _reportedPlaybackStatusWhenCommanded = reportedStatus;
+            _commandedPlaybackStatus = commanded;
+            _commandedPlaybackStatusAt = DateTime.UtcNow;
+
+            ShowPlaybackStatus(commanded);
+            _ = ReconcilePlaybackStatusAsync(focusedSession, generation);
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to toggle play/pause");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Counts play/pause commands, so that a late reconciliation can never overwrite the feedback of a
+    /// newer command.
+    /// </summary>
+    private int _playbackStatusGeneration;
+
+    /// <summary>
+    /// How long to wait before checking whether the player reported a play/pause state of its own.
+    /// </summary>
+    private const int PlaybackStatusReconcileDelayMs = 1500;
+
+    /// <summary>
+    /// How long the status a play/pause command asked for may override what Windows reports. Some players
+    /// report seconds late, so the override has to outlive that; but a state the user changed somewhere else
+    /// (media keys, the player's own window) must win in the end, and that state can look exactly like the
+    /// one from before the command.
+    /// </summary>
+    private const int PlaybackStatusTrustWindowMs = 20000;
+
+    /// <summary>
+    /// The media session the last play/pause command was sent to, or null when no command is pending.
+    /// </summary>
+    private string? _commandedPlaybackStatusSessionId;
+
+    /// <summary>
+    /// The playback status a play/pause command asked for. Windows keeps repeating the status from before
+    /// that command until the player tells it about the change, so this is what the icons show meanwhile.
+    /// </summary>
+    private GlobalSystemMediaTransportControlsSessionPlaybackStatus? _commandedPlaybackStatus;
+
+    /// <summary>
+    /// The playback status Windows reported when that command was sent - the value it keeps repeating while
+    /// it has not caught up. A different status is newer than the command and therefore wins.
+    /// </summary>
+    private GlobalSystemMediaTransportControlsSessionPlaybackStatus? _reportedPlaybackStatusWhenCommanded;
+
+    /// <summary>
+    /// When that command was sent, so that its status stops overriding Windows after a while.
+    /// </summary>
+    private DateTime _commandedPlaybackStatusAt;
+
+    /// <summary>
+    /// Decides which playback status the play/pause icons show.
+    /// </summary>
+    /// <remarks>
+    /// A status Windows reports that is still the one from before the last command is not newer
+    /// information: the player simply has not told Windows about the change yet (some report seconds late,
+    /// some not at all). Showing it would flip the icons back to the state the user just left, and a second
+    /// command would derive its new state from that stale value and flip the icon the wrong way. A status
+    /// that differs from the one from before the command is real news, so the command is forgotten and that
+    /// status is used.
+    /// </remarks>
+    private GlobalSystemMediaTransportControlsSessionPlaybackStatus? ResolvePlaybackStatus(
+        string? sessionId,
+        GlobalSystemMediaTransportControlsSessionPlaybackStatus? reportedStatus)
+    {
+        if (_commandedPlaybackStatusSessionId != null && _commandedPlaybackStatusSessionId != sessionId)
+            ForgetCommandedPlaybackStatus(); // another session is in focus now, the command does not apply
+
+        if (_commandedPlaybackStatus is { } commanded && _reportedPlaybackStatusWhenCommanded is { } reportedWhenCommanded)
+        {
+            if (DateTime.UtcNow - _commandedPlaybackStatusAt < TimeSpan.FromMilliseconds(PlaybackStatusTrustWindowMs))
+            {
+                if (reportedStatus == null || reportedStatus == reportedWhenCommanded)
+                    return commanded;
+            }
+
+            // Either Windows reported a status that is newer than the command, or the command has been
+            // trusted for long enough: from here on what Windows reports is all there is.
+            ForgetCommandedPlaybackStatus();
+        }
+
+        return reportedStatus;
+    }
+
+    /// <summary>
+    /// Drops the playback status of a play/pause command, so that later reads use what Windows reports.
+    /// </summary>
+    private void ForgetCommandedPlaybackStatus()
+    {
+        _commandedPlaybackStatusSessionId = null;
+        _commandedPlaybackStatus = null;
+        _reportedPlaybackStatusWhenCommanded = null;
+    }
+
+    /// <summary>
+    /// Writes a playback status to both play/pause surfaces - the media flyout button and the taskbar
+    /// widget - without re-reading the media properties. This is what makes them follow a command
+    /// immediately instead of waiting for the session's playback state notification.
+    /// </summary>
+    private void ShowPlaybackStatus(GlobalSystemMediaTransportControlsSessionPlaybackStatus status)
+    {
+        bool playing = status == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+
+        Dispatcher.Invoke(() =>
+        {
+            SymbolPlayPause.Symbol = playing ? Wpf.Ui.Controls.SymbolRegular.Pause16 : Wpf.Ui.Controls.SymbolRegular.Play16;
+        });
+
+        taskbarWindow?.SetPlaybackStatus(status);
+    }
+
+    /// <summary>
+    /// Checks once after an optimistic icon update which status the play/pause icons should show, and covers
+    /// the case where Windows caught up with the player in the meantime.
+    /// </summary>
+    /// <remarks>
+    /// The read goes through <see cref="ResolvePlaybackStatus"/>, so a status that is still the one from
+    /// before the command leaves the optimistic icon in place instead of flipping it back.
+    /// </remarks>
+    private async Task ReconcilePlaybackStatusAsync(MediaSession session, int generation)
+    {
+        try
+        {
+            await Task.Delay(PlaybackStatusReconcileDelayMs);
+
+            if (generation != _playbackStatusGeneration)
+                return;
+
+            ApplyResolvedPlaybackStatus(session);
+
+            await Task.Delay(Math.Max(0, PlaybackStatusTrustWindowMs - PlaybackStatusReconcileDelayMs));
+
+            if (generation != _playbackStatusGeneration)
+                return;
+
+            // The command is no longer trusted: if Windows never reported the change, what it reports now is
+            // all there is - even when that means showing the older symbol again.
+            ForgetCommandedPlaybackStatus();
+            ApplyResolvedPlaybackStatus(session);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to reconcile the play/pause state");
+        }
+    }
+
+    /// <summary>
+    /// Reads the session's playback status and shows the one the play/pause icons should have.
+    /// </summary>
+    private void ApplyResolvedPlaybackStatus(MediaSession session)
+    {
+        var status = ResolvePlaybackStatus(session.Id, session.ControlSession.GetPlaybackInfo()?.PlaybackStatus);
+        if (status == null)
+            return;
+
+        ShowPlaybackStatus(status.Value);
+    }
+
+    public async Task<bool> TrySkipNextAsync()
+    {
+        try
+        {
+            var focusedSession = GetActiveMediaSession();
+            if (focusedSession == null) return false;
+            return await focusedSession.ControlSession.TrySkipNextAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to skip to the next track");
+            return false;
+        }
+    }
+
+    public async Task<bool> TryOpenMediaPlayerAsync()
+    {
+        try
+        {
+            if (GetActiveMediaSession() is { } activeSession)
+            {
+                var mediaProperties = await TryGetMediaPropertiesAsync(activeSession.ControlSession);
+                return await Task.Run(() => MediaPlayerData.TryActivateMediaPlayer(activeSession.Id, mediaProperties?.Title));
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to open media player");
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Blocking read of the media properties, for use on the media callback threads only
+    /// </summary>
+    /// <remarks>
+    /// Prefer <see cref="TryGetMediaPropertiesAsync"/> anywhere that can run on the UI thread -
+    /// this WinRT call may stall for hundreds of milliseconds.
+    /// </remarks>
+    private static GlobalSystemMediaTransportControlsSessionMediaProperties? TryGetMediaProperties(GlobalSystemMediaTransportControlsSession controlSession)
+    {
+        try
+        {
+            return controlSession.TryGetMediaPropertiesAsync().GetAwaiter().GetResult();
+        }
+        catch (COMException ex)
+        {
+            Logger.Error(ex, "Failed to retrieve data from the player");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Asynchronous read of the media properties, so the caller never blocks its thread on the media session
+    /// </summary>
+    private static async Task<GlobalSystemMediaTransportControlsSessionMediaProperties?> TryGetMediaPropertiesAsync(GlobalSystemMediaTransportControlsSession controlSession)
+    {
+        try
+        {
+            return await controlSession.TryGetMediaPropertiesAsync();
+        }
+        catch (COMException ex)
+        {
+            Logger.Error(ex, "Failed to retrieve data from the player");
+            return null;
+        }
+    }
+
+    private void openSettings(object? sender, EventArgs e)
+    {
+        SettingsWindow.ShowInstance();
+    }
+
+    public static int getDuration() // get the duration of the animation based on the speed setting
+    {
+        int msDuration = SettingsManager.Current.FlyoutAnimationSpeed switch
+        {
+            0 => 0, // off
+            1 => 150, // 0.5x
+            2 => 300, // 1x
+            3 => 450, // 1.5x
+            4 => 600, // 2x
+            _ => 900 // 3x
+        };
+        return msDuration;
+    }
+
+    public EasingFunctionBase getEasingStyle(bool easeOut)
+    {
+        EasingMode easingMode = easeOut ? EasingMode.EaseOut : EasingMode.EaseIn;
+        EasingFunctionBase easingStyle = SettingsManager.Current.FlyoutAnimationEasingStyle switch
+        {
+            // 0 is linear, null
+            1 => new SineEase { EasingMode = easingMode }, // sine
+            2 => new QuadraticEase { EasingMode = easingMode }, // quadratic
+            _ => new CubicEase { EasingMode = easingMode }, // cubic
+        };
+        return easingStyle;
+    }
+
+    private MonitorUtil.MonitorInfo getSelectedMonitor()
+    {
+        return MonitorUtil.GetSelectedMonitor(SettingsManager.Current.FlyoutSelectedMonitor);
+    }
+
+    /// <summary>
+    /// Screen rectangle of the media widget on the taskbar, in physical pixels.
+    /// </summary>
+    /// <returns>False when the widget is disabled, not placed yet, or has no size.</returns>
+    /// <remarks>
+    /// Used to put the volume flyout directly above that widget instead of above the middle of the screen.
+    /// <see cref="UIElement.PointToScreen"/> is what makes this correct on mixed-DPI setups and for a
+    /// widget that lives inside a taskbar-parked child window.
+    /// </remarks>
+    public bool TryGetTaskbarWidgetScreenRect(out Rect rect)
+    {
+        rect = Rect.Empty;
+
+        TaskbarWidgetControl? widget = taskbarWindow?.Widget;
+        if (widget == null || !widget.IsVisible || widget.ActualWidth <= 0 || widget.ActualHeight <= 0)
+            return false;
+
+        try
+        {
+            Point topLeft = widget.PointToScreen(new Point(0, 0));
+            Point bottomRight = widget.PointToScreen(new Point(widget.ActualWidth, widget.ActualHeight));
+
+            rect = new Rect(topLeft.X, topLeft.Y, bottomRight.X - topLeft.X, bottomRight.Y - topLeft.Y);
+            return rect.Width > 0 && rect.Height > 0;
+        }
+        catch (Exception ex)
+        {
+            Logger.Debug(ex, "Could not resolve the taskbar widget rectangle");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Computes the final resting position (left, top) for a window based on the current
+    /// position setting and the selected monitor's work area.
+    /// </summary>
+    private static double GetBottomCenterFlyoutBottomMargin(bool reserveNativeVolumeOsdSpace)
+    {
+        if (!reserveNativeVolumeOsdSpace)
+            return 16;
+
+        return SettingsManager.Current.VolumeControlEnabled && SettingsManager.Current.VolumeControlAboveMediaFlyout ? 16 : 80;
+    }
+
+    private (double left, double top) GetFinalPosition(Rect windowRect, Rect workArea, bool reserveNativeVolumeOsdSpace = false)
+    {
+        int position = SettingsManager.Current.Position;
+        double left = position switch
+        {
+            0 or 3 => workArea.Left + 16,
+            2 or 5 => workArea.Left + workArea.Width - windowRect.Width - 16,
+            _ => workArea.Left + workArea.Width / 2 - windowRect.Width / 2
+        };
+        double top = position switch
+        {
+            0 or 2 => workArea.Top + workArea.Height - windowRect.Height - 16,
+            1 => workArea.Top + workArea.Height - windowRect.Height - GetBottomCenterFlyoutBottomMargin(reserveNativeVolumeOsdSpace),
+            _ => workArea.Top + 16
+        };
+        return (left, top);
+    }
+
+    // WPF does not expose a Window's storyboard by name; the only way to reach it is through
+    // Window.Triggers -> EventTrigger.Actions -> BeginStoryboard.Storyboard, and the only way to
+    // reach an individual animation is by its position in storyboard.Children (see MainWindow.xaml,
+    // where Children[0] is the Top animation and Children[1] the Opacity animation).
+    // These accessors assert the expected shape once, so a XAML edit fails loudly here instead of
+    // producing an InvalidCastException or a NullReferenceException somewhere else.
+    private const int MoveAnimationIndex = 0;
+    private const int OpacityAnimationIndex = 1;
+
+    private static Storyboard GetWindowStoryboard(MicaWindow window)
+    {
+        if (window.Triggers.Count == 0 || window.Triggers[0] is not EventTrigger eventTrigger)
+            throw new InvalidOperationException($"{window.GetType().Name} has no EventTrigger, so its open/close animation cannot be resolved.");
+
+        if (eventTrigger.Actions.Count == 0 || eventTrigger.Actions[0] is not BeginStoryboard beginStoryboard || beginStoryboard.Storyboard is null)
+            throw new InvalidOperationException($"{window.GetType().Name} has no BeginStoryboard action, so its open/close animation cannot be resolved.");
+
+        return beginStoryboard.Storyboard;
+    }
+
+    private static DoubleAnimation GetDoubleAnimation(Storyboard storyboard, int index, string role)
+    {
+        if (storyboard.Children.Count <= index || storyboard.Children[index] is not DoubleAnimation animation)
+            throw new InvalidOperationException($"Expected a DoubleAnimation at storyboard.Children[{index}] ({role}); check the animation order in the window's XAML.");
+
+        return animation;
+    }
+
+    /// <param name="anchorToTaskbarWidget">
+    /// Only meaningful together with <paramref name="alwaysBottom"/>: centre the flyout above the media
+    /// widget on the taskbar instead of above the middle of the screen.
+    /// </param>
+    public void OpenAnimation(MicaWindow window, bool alwaysBottom = false, MonitorInfo? selectedMonitor = null, MicaWindow? aboveReference = null, bool reserveNativeVolumeOsdSpace = false, bool referenceMayBeHidden = false, bool anchorToTaskbarWidget = false)
+    {
+        var storyboard = GetWindowStoryboard(window);
+
+        var monitor = selectedMonitor != null ? selectedMonitor.Value : getSelectedMonitor();
+        var workArea = monitor.workArea;
+
+        // prevent flickering
+        WindowHelper.SetVisibility(window, false); // window.Visibility = Visibility.Hidden works with some delay
+
+        // Update the DPI by moving the window to the target workArea, ignoring WPF scaling
+        WindowHelper.SetPosition(window, workArea.Left, workArea.Top);
+        var windowRect = WindowHelper.GetPlacement(window); // here we take the updated window size in raw coordinates.
+
+        DoubleAnimation moveAnimation = GetDoubleAnimation(storyboard, MoveAnimationIndex, "Top");
+
+        double window_left = 0;
+
+        // If a reference window is provided, position the window next to it. The reference does not have to
+        // be visible: a caller that stacks its flyout above the media flyout passes referenceMayBeHidden
+        // while that flyout is still on its way in, because ShowMediaFlyout() only becomes visible after
+        // awaiting its media property read. The reference rectangle is derived from the settings and the
+        // reference's own size, so it is correct before the reference is shown.
+        if (aboveReference != null && (aboveReference.IsVisible || referenceMayBeHidden))
+        {
+            // Here we work with raw monitor coordinates, without taking DPI into account.
+            // The reference window can be on a different monitor with a different scale factor, so its
+            // WPF (device independent) size has to be converted with the DPI of *its* monitor - using the
+            // target monitor's DPI produced a wrong reference rectangle on mixed-DPI setups.
+            var referenceMonitor = GetMonitor(aboveReference);
+            double refWidth = aboveReference.Width * referenceMonitor.dpiX / 96.0;
+            double refHeight = aboveReference.Height * referenceMonitor.dpiY / 96.0;
+            var refRect = new Rect(0, 0, refWidth, refHeight);
+            var (refLeft, refTop) = GetFinalPosition(refRect, workArea, reserveNativeVolumeOsdSpace);
+
+            window_left = refLeft + refWidth / 2 - windowRect.Width / 2;
+            double aboveTop = refTop - windowRect.Height - 8;
+            bool isTop = SettingsManager.Current.Position switch
+            {
+                3 or 4 or 5 => true,
+                _ => false
+            };
+
+            // If the reference window is too close to the top edge, we place the flyout below it instead of above to prevent it from going off-screen.
+            if (isTop)
+                aboveTop = refTop + refHeight + 8;
+
+            moveAnimation.To = aboveTop;
+            if (SettingsManager.Current.FlyoutAnimationSpeed == 0)
+                moveAnimation.From = moveAnimation.To;
+            else
+                moveAnimation.From = isTop ? aboveTop - 20 : aboveTop + 20;
+        }
+        // default behavior: position the flyout based on the user's settings
+        else if (alwaysBottom == false)
+        {
+            _position = SettingsManager.Current.Position;
+            if (_position == 0)
+            {
+                window_left = workArea.Left + 16;
+                moveAnimation.To = workArea.Top + workArea.Height - windowRect.Height - 16;
+                if (SettingsManager.Current.FlyoutAnimationSpeed == 0) // if off, don't animate (just appear at the bottom)
+                    moveAnimation.From = moveAnimation.To;
+                else
+                    moveAnimation.From = workArea.Top + workArea.Height - windowRect.Height + 4; // appear from the bottom of the screen
+            }
+            else if (_position == 1)
+            {
+                window_left = workArea.Left + workArea.Width / 2 - windowRect.Width / 2;
+                double bottomMargin = GetBottomCenterFlyoutBottomMargin(reserveNativeVolumeOsdSpace);
+                double moveTo = workArea.Top + workArea.Height - windowRect.Height - bottomMargin;
+                moveAnimation.To = moveTo;
+                if (SettingsManager.Current.FlyoutAnimationSpeed == 0)
+                    moveAnimation.From = moveTo;
+                else
+                    moveAnimation.From = moveTo + 20;
+            }
+            else if (_position == 2)
+            {
+                window_left = workArea.Left + workArea.Width - windowRect.Width - 16;
+                moveAnimation.To = workArea.Top + workArea.Height - windowRect.Height - 16;
+                if (SettingsManager.Current.FlyoutAnimationSpeed == 0)
+                    moveAnimation.From = moveAnimation.To;
+                else
+                    moveAnimation.From = workArea.Top + workArea.Height - windowRect.Height + 4;
+            }
+            else if (_position == 3)
+            {
+                window_left = workArea.Left + 16;
+                moveAnimation.To = workArea.Top + 16;
+                if (SettingsManager.Current.FlyoutAnimationSpeed == 0)
+                    moveAnimation.From = moveAnimation.To;
+                else
+                    moveAnimation.From = workArea.Top + -4;
+            }
+            else if (_position == 4)
+            {
+                window_left = workArea.Left + workArea.Width / 2 - windowRect.Width / 2;
+                moveAnimation.To = workArea.Top + 16;
+                if (SettingsManager.Current.FlyoutAnimationSpeed == 0)
+                    moveAnimation.From = moveAnimation.To;
+                else
+                    moveAnimation.From = workArea.Top + -4;
+            }
+            else if (_position == 5)
+            {
+                window_left = workArea.Left + workArea.Width - windowRect.Width - 16;
+                moveAnimation.To = workArea.Top + 16;
+                if (SettingsManager.Current.FlyoutAnimationSpeed == 0)
+                    moveAnimation.From = moveAnimation.To;
+                else
+                    moveAnimation.From = workArea.Top + -4;
+            }
+        }
+        // other cases (e.g. if alwaysBottom is true): position the flyout at the bottom of the screen
+        else
+        {
+            window_left = workArea.Left + workArea.Width / 2 - windowRect.Width / 2;
+
+            // "Just above the taskbar" for the volume flyout means directly above the media widget that
+            // lives on it, not centred on the screen: with the widget near the start or the end of the
+            // taskbar those are two very different places. Falls back to centred when the widget is not
+            // placed (disabled, or the taskbar is still starting up).
+            if (anchorToTaskbarWidget && TryGetTaskbarWidgetScreenRect(out Rect widgetRect)
+                && widgetRect.Right > workArea.Left && widgetRect.Left < workArea.Right)
+            {
+                // Width is the WPF (device independent) width of the flyout that is being placed, so it has
+                // to be scaled with the target monitor's DPI to compare it against physical pixels.
+                double flyoutWidth = double.IsNaN(window.Width)
+                    ? windowRect.Width
+                    : window.Width * monitor.dpiX / 96.0;
+
+                double centredOnWidget = widgetRect.Left + widgetRect.Width / 2 - flyoutWidth / 2;
+                double minLeft = workArea.Left + 16;
+                double maxLeft = workArea.Right - flyoutWidth - 16;
+
+                // keep the flyout inside the work area when the widget sits close to either edge
+                window_left = maxLeft > minLeft
+                    ? Math.Clamp(centredOnWidget, minLeft, maxLeft)
+                    : minLeft;
+
+                Logger.Info($"Placed {window.GetType().Name} above the taskbar widget " +
+                            $"(left={window_left:0}, width={flyoutWidth:0}, widget=[{widgetRect.Left:0}..{widgetRect.Right:0}], " +
+                            $"workArea=[{workArea.Left:0}..{workArea.Right:0}])");
+            }
+            else if (anchorToTaskbarWidget)
+            {
+                Logger.Info($"No taskbar widget rectangle available, centring {window.GetType().Name} instead");
+            }
+
+            moveAnimation.To = workArea.Top + workArea.Height - windowRect.Height - 16;
+            if (SettingsManager.Current.FlyoutAnimationSpeed == 0)
+                moveAnimation.From = moveAnimation.To;
+            else
+                moveAnimation.From = workArea.Top + workArea.Height - windowRect.Height + 4;
+        }
+
+        // Set the initial position in raw coordinates.
+        WindowHelper.SetPosition(window, window_left, moveAnimation.From!.Value);
+
+        // Next coordinates will be used to set Window.Top, which takes DPI into account,
+        // so we need to convert the coordinates to DPI scale.
+        moveAnimation.From *= 96.0 / monitor.dpiY;
+        moveAnimation.To *= 96.0 / monitor.dpiY;
+
+        int msDuration = getDuration();
+
+        DoubleAnimation opacityAnimation = GetDoubleAnimation(storyboard, OpacityAnimationIndex, "Opacity");
+        if (SettingsManager.Current.FlyoutAnimationSpeed != 0) opacityAnimation.From = 0;
+        opacityAnimation.To = 1;
+        opacityAnimation.Duration = new Duration(TimeSpan.FromMilliseconds(msDuration));
+
+        if (SettingsManager.Current.FlyoutAnimationEasingStyle == 0) moveAnimation.EasingFunction = opacityAnimation.EasingFunction = null;
+        else moveAnimation.EasingFunction = opacityAnimation.EasingFunction = getEasingStyle(true);
+        moveAnimation.Duration = new Duration(TimeSpan.FromMilliseconds(msDuration));
+
+        storyboard.Begin(window);
+        WindowHelper.SetVisibility(window, true);
+        WindowHelper.SetTopmost(window);
+    }
+
+    public void CloseAnimation(MicaWindow window, MonitorInfo? selectedMonitor = null)
+    {
+        var storyboard = GetWindowStoryboard(window);
+
+        var monitor = selectedMonitor != null ? selectedMonitor.Value : getSelectedMonitor();
+        var workArea = monitor.workArea;
+        Rect windowRect = WindowHelper.GetPlacement(window);
+
+        DoubleAnimation moveAnimation = GetDoubleAnimation(storyboard, MoveAnimationIndex, "Top");
+
+        // Use the window's actual current position as the animation start
+        moveAnimation.From = windowRect.Top;
+
+        if (SettingsManager.Current.FlyoutAnimationSpeed != 0)
+        {
+            // Determine slide direction
+            bool isTopHalf = windowRect.Top + windowRect.Height / 2 < workArea.Top + workArea.Height / 2;
+            moveAnimation.To = windowRect.Top + (isTopHalf ? -20 : 20);
+        }
+        else
+        {
+            // Nothing slides, so drop any leftover target from a previous animation; leaving a stale
+            // value here makes the window jump to the old coordinates as soon as it is shown again.
+            moveAnimation.To = moveAnimation.From;
+        }
+
+        moveAnimation.From *= 96.0 / monitor.dpiY;
+        if (moveAnimation.To != null)
+            moveAnimation.To *= 96.0 / monitor.dpiY;
+
+        int msDuration = getDuration();
+
+        DoubleAnimation opacityAnimation = GetDoubleAnimation(storyboard, OpacityAnimationIndex, "Opacity");
+        opacityAnimation.From = 1;
+        if (SettingsManager.Current.FlyoutAnimationSpeed != 0) opacityAnimation.To = 0;
+        opacityAnimation.Duration = new Duration(TimeSpan.FromMilliseconds(msDuration));
+
+        if (SettingsManager.Current.FlyoutAnimationEasingStyle == 0) moveAnimation.EasingFunction = opacityAnimation.EasingFunction = null;
+        else moveAnimation.EasingFunction = opacityAnimation.EasingFunction = getEasingStyle(false);
+        moveAnimation.Duration = new Duration(TimeSpan.FromMilliseconds(msDuration));
+
+        storyboard.Begin(window);
+    }
+
+    /// <summary>
+    /// Refreshes the taskbar widget with the current media session
+    /// </summary>
+    /// <remarks>
+    /// Asynchronous so callers on the UI thread never wait for the media session to answer. It is
+    /// fire-and-forget from the various settings and media handlers, so it swallows its own errors.
+    /// </remarks>
+    public async Task UpdateTaskbarAsync()
+    {
+        try
+        {
+            var activeSession = GetActiveMediaSession();
+            if (!mediaManager.IsStarted || activeSession == null)
+            {
+                taskbarWindow?.UpdateUi("-", "-", null, GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed);
+                return;
+            }
+
+            var songInfo = await TryGetMediaPropertiesAsync(activeSession.ControlSession);
+            if (songInfo == null)
+                return;
+
+            var playbackInfo = activeSession.ControlSession.GetPlaybackInfo();
+            var playbackStatus = ResolvePlaybackStatus(activeSession.Id, playbackInfo.PlaybackStatus);
+            var thumbnail = BitmapHelper.GetThumbnail(songInfo.Thumbnail);
+            BitmapHelper.GetDominantColors(1);
+            taskbarWindow?.UpdateUi(songInfo.Title, songInfo.Artist, thumbnail, playbackStatus, playbackInfo.Controls);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to update the taskbar widget");
+        }
+    }
+
+    public void reportBug(object? sender, EventArgs e)
+    {
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = AppLinks.ReportIssue,
+            UseShellExecute = true
+        });
+    }
+
+    private void openRepository(object? sender, EventArgs e)
+    {
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = AppLinks.Repository,
+            UseShellExecute = true
+        });
+    }
+
+    public void openLogsFolder(object? sender, EventArgs e)
+    {
+        try
+        {
+            Process.Start("explorer.exe", FileSystemHelper.GetLogsPath());
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to open logs folder");
+        }
+    }
+
+    private void pauseOtherMediaSessionsIfNeeded(MediaSession mediaSession)
+    {
+        if (
+            SettingsManager.Current.PauseOtherSessionsEnabled
+            && mediaSession.ControlSession.GetPlaybackInfo().PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing
+            )
+        {
+            PauseOtherSessions(mediaSession);
+        }
+    }
+
+    private void CurrentSession_OnPlaybackStateChanged(MediaSession mediaSession, GlobalSystemMediaTransportControlsSessionPlaybackInfo? playbackInfo = null)
+    {
+#if DEBUG
+        Logger.Debug("Playback state changed: " + mediaSession.Id + " " + mediaSession.ControlSession.GetPlaybackInfo().PlaybackStatus);
+#endif     
+        pauseOtherMediaSessionsIfNeeded(mediaSession);
+
+        var focusedSession = GetActiveMediaSession();
+        if (focusedSession == null)
+        {
+            taskbarWindow?.UpdateUi("-", "-", null, GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed);
+            return;
+        }
+
+        var tbSongInfo = TryGetMediaProperties(focusedSession.ControlSession);
+        if (tbSongInfo != null)
+        {
+            var tbThumbnail = BitmapHelper.GetThumbnail(tbSongInfo.Thumbnail);
+            BitmapHelper.GetDominantColors(1);
+            var tbPlayback = focusedSession.ControlSession.GetPlaybackInfo();
+            var tbPlaybackStatus = tbPlayback == null
+                ? null
+                : ResolvePlaybackStatus(focusedSession.Id, tbPlayback.PlaybackStatus);
+
+            taskbarWindow?.UpdateUi(tbSongInfo.Title, tbSongInfo.Artist, tbThumbnail, tbPlaybackStatus, tbPlayback?.Controls);
+        }
+
+        if (IsVisible)
+        {
+            _ = UpdateUIAsync(focusedSession);
+            HandlePlayBackState(playbackInfo?.PlaybackStatus);
+        }
+    }
+
+    // for determining whether MediaPropertyChanged has no changes
+    private string previousMediaProperty = "";
+    private int previousMediaPropertyThumbnail = 0;
+
+    /// <summary>
+    /// Title and artist of the song the last widget update ran for, used to notice a track change.
+    /// </summary>
+    private string previousSongIdentity = "";
+    private void MediaManager_OnAnyMediaPropertyChanged(MediaSession mediaSession, GlobalSystemMediaTransportControlsSessionMediaProperties mediaProperties)
+    {
+        // sometimes mediaSession.ControlSession can be null
+        if (mediaSession.ControlSession == null)
+            return;
+
+#if DEBUG
+        Logger.Debug("Media property changed: " + mediaProperties.Title + " " + mediaSession.ControlSession.GetPlaybackInfo().PlaybackStatus);
+#endif
+        var currentActiveSession = GetActiveMediaSession();
+        if (currentActiveSession == null)
+        {
+            taskbarWindow?.UpdateUi("-", "-", null, GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed);
+            return;
+        }
+
+        var songInfo = TryGetMediaProperties(currentActiveSession.ControlSession);
+        if (songInfo == null)
+            return;
+
+        var playbackInfo = currentActiveSession.ControlSession.GetPlaybackInfo();
+
+        string check = songInfo.Title + songInfo.Artist + playbackInfo.PlaybackStatus;
+        // One read of the thumbnail stream provides both the change-detection hash and the image.
+        var (checkThumbnail, thumbnail) = BitmapHelper.GetThumbnailWithHash(songInfo.Thumbnail);
+        bool onlyThumbnailChanged = false;
+        if (previousMediaProperty == check)
+        {
+            onlyThumbnailChanged = true;
+            if (previousMediaPropertyThumbnail == checkThumbnail)
+                return; // prevent multiple calls for the same song info
+        }
+
+        previousMediaProperty = check;
+        previousMediaPropertyThumbnail = checkThumbnail;
+
+        // A different song brings its own playback state, so a play/pause command sent for the previous one
+        // must not keep overriding what Windows reports for this one.
+        string songIdentity = songInfo.Title + songInfo.Artist;
+        if (previousSongIdentity != songIdentity)
+        {
+            previousSongIdentity = songIdentity;
+            ForgetCommandedPlaybackStatus();
+        }
+
+        var playbackStatus = ResolvePlaybackStatus(currentActiveSession.Id, playbackInfo.PlaybackStatus);
+
+        BitmapHelper.GetDominantColors(1);
+
+        taskbarWindow?.UpdateUi(songInfo.Title, songInfo.Artist, thumbnail, playbackStatus, playbackInfo.Controls);
+
+        pauseOtherMediaSessionsIfNeeded(mediaSession);
+
+        if (SettingsManager.Current.NextUpEnabled && !FullscreenDetector.IsFullscreenApplicationRunning()) // show NextUpWindow if enabled in settings
+        {
+            void createNewNextUpWindow()
+            {
+                if (thumbnail == null) // the thumbnail exists but could not be decoded
+                    return;
+
+                Dispatcher.Invoke(() =>
+                {
+                    if (nextUpWindow == null && playbackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing) // double-check within the Dispatcher to prevent race conditions
+                    {
+                        nextUpWindow = new NextUpWindow(songInfo.Title, songInfo.Artist, thumbnail);
+                        currentTitle = songInfo.Title;
+                        nextUpWindow.Closed += (s, e) => nextUpWindow = null; // set nextUpWindow to null when closed
+                    }
+                });
+            }
+
+            if (nextUpWindow == null && IsVisible == false && songInfo.Thumbnail != null && currentTitle != songInfo.Title)
+            {
+                createNewNextUpWindow();
+            }
+            else if (nextUpWindow != null && !onlyThumbnailChanged)
+            {
+                Dispatcher.Invoke(() =>
+                {
+                    if (nextUpWindow != null)
+                    {
+                        WindowHelper.SetVisibility(nextUpWindow, false); // prevents rare flickering during rapid closing
+                        nextUpWindow.Close(); // must be cleared by the Closed event
+                    }
+                });
+                createNewNextUpWindow();
+            }
+            else if (nextUpWindow != null && thumbnail != null)
+            {
+                Dispatcher.Invoke(() =>
+                {
+                    nextUpWindow?.UpdateThumbnail(thumbnail);
+                });
+            }
+        }
+
+        if (IsVisible)
+        {
+            var focusedSession = GetActiveMediaSession();
+            if (focusedSession != null)
+            {
+                HandlePlayBackState(focusedSession.ControlSession.GetPlaybackInfo()?.PlaybackStatus);
+                _ = UpdateUIAsync(focusedSession);
+            }
+        }
+    }
+
+    private void MediaManager_OnAnyTimelinePropertyChanged(MediaSession mediaSession, GlobalSystemMediaTransportControlsSessionTimelineProperties timelineProperties)
+    {
+        if (GetActiveMediaSession() is not { } session || session.Id != mediaSession.Id) return;
+
+        if (_seekBarEnabled)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                if (Visibility != Visibility.Visible || _isHiding || _isDragging) return;
+
+                _lastSelfUpdateTimestamp = DateTime.Now;
+                UpdateSeekbarCurrentDuration(session.ControlSession.GetTimelineProperties().Position);
+                HandlePlayBackState(session.ControlSession.GetPlaybackInfo().PlaybackStatus);
+            });
+        }
+    }
+
+    private void MediaManager_OnAnySessionClosed(MediaSession mediaSession)
+    {
+#if DEBUG
+        Logger.Debug("Session closed: " + (mediaSession.Id).ToString());
+#endif
+        _ = UpdateTaskbarAsync();
+    }
+
+    private static IntPtr SetHook(LowLevelKeyboardProc proc) // set the keyboard hook
+    {
+        using Process curProcess = Process.GetCurrentProcess();
+        using ProcessModule? curModule = curProcess.MainModule;
+        if (curModule == null)
+        {
+            Logger.Warn("Failed to set keyboard hook - FluentFlyout will now rely on WndProc only");
+            return IntPtr.Zero;
+        }
+        return SetWindowsHookEx(WH_KEYBOARD_LL, proc, GetModuleHandle(curModule.ModuleName), 0);
+    }
+
+    private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+    {
+        // A low-level keyboard hook runs synchronously on the UI thread, in the middle of the system's
+        // input chain: every millisecond spent here delays every keystroke on the machine, and Windows
+        // silently removes hooks that take too long. So this callback only classifies the key and hands
+        // it to our own message queue; HandleGlobalKey() does the actual work afterwards.
+        if (nCode >= 0 && (wParam == WM_KEYDOWN || wParam == WM_KEYUP))
+        {
+            int vkCode = Marshal.ReadInt32(lParam);
+
+            if (IsKeyOfInterest(vkCode) && _windowHandle != IntPtr.Zero)
+            {
+                PostMessage(
+                    _windowHandle,
+                    WM_FLUENTFLYOUT_INPUT,
+                    vkCode,
+                    wParam == WM_KEYUP ? 1 : 0);
+            }
+        }
+
+        // Never swallow the key. This hook is a notification tap, not a filter; returning 1 here would
+        // hide the key from every other application.
+        return CallNextHookEx(_hookId, nCode, wParam, lParam);
+    }
+
+    /// <summary>
+    /// Cheap check for the keys the app reacts to. Called from the keyboard hook callback, so it must
+    /// stay allocation-free and must not touch settings or any other shared state.
+    /// </summary>
+    private static bool IsKeyOfInterest(int vkCode)
+    {
+        return vkCode is 0xB3 or 0xB0 or 0xB1 or 0xB2   // Play/Pause, Next, Previous, Stop
+            or 0xAD or 0xAE or 0xAF                    // Mute, Volume Down, Volume Up
+            or 0x14 or 0x90 or 0x91 or 0x2D;           // Caps Lock, Num Lock, Scroll Lock, Insert
+    }
+
+    /// <summary>
+    /// Handles a key that the keyboard hook forwarded through <see cref="WM_FLUENTFLYOUT_INPUT"/>.
+    /// Runs on the UI thread from WndProc, i.e. after the hook has already returned.
+    /// </summary>
+    private void HandleGlobalKey(int vkCode, bool isKeyUp)
+    {
+        bool mediaKeysPressed = vkCode is 0xB3 or 0xB0 or 0xB1 or 0xB2; // Play/Pause, next, previous, stop
+        bool volumeKeysPressed = vkCode is 0xAD or 0xAE or 0xAF; // Mute, Volume Down, Volume Up
+
+        // The Play/Pause key is a toggle that Windows cannot tell apart from the command this app
+        // sent: a player that still reports the value from before our command looks identical to one
+        // that followed a key press reversing it. A key press is an external command, so drop the
+        // optimistic state and start following the reported one again. Other media keys change the
+        // playback state to a value we can recognise (a different status or a different song).
+        if (!isKeyUp && vkCode == 0xB3)
+            ForgetCommandedPlaybackStatus();
+
+        // MainWindow.WndProc() also handles media and volume keys through the shell hook
+        if (mediaKeysPressed || volumeKeysPressed)
+        {
+            // The volume flyout is stacked above the media flyout only when the media flyout is really
+            // there - see VolumeMixerWindow.ShowFlyout. This key press is the only place that knows the
+            // answer before the (asynchronous) media flyout has appeared, so its result is kept.
+            bool mediaFlyoutWillShow = false;
+            if (mediaKeysPressed || (!SettingsManager.Current.MediaFlyoutVolumeKeysExcluded && volumeKeysPressed))
+                mediaFlyoutWillShow = TryShowMediaFlyoutDebounced();
+
+            if (SettingsManager.Current.VolumeControlEnabled)
+            {
+                volumeMixerWindow?.ViewModel.SyncMasterFromDevice();
+                volumeMixerWindow?.ShowFlyout(mediaFlyoutExpected: mediaFlyoutWillShow);
+            }
+        }
+
+        if (SettingsManager.Current.LockKeysEnabled
+            && !FullscreenDetector.IsFullscreenApplicationRunning()
+            && isKeyUp)
+        {
+            if (vkCode == 0x14 && SettingsManager.Current.LockKeysCapsEnabled) // Caps Lock
+            {
+                lockWindow ??= new LockWindow();
+                lockWindow.ShowLockFlyout(FindResource("LockWindow_CapsLock").ToString(), Keyboard.IsKeyToggled(Key.CapsLock));
+            }
+            else if (vkCode == 0x90 && SettingsManager.Current.LockKeysNumEnabled) // Num Lock
+            {
+                lockWindow ??= new LockWindow();
+                lockWindow.ShowLockFlyout(FindResource("LockWindow_NumLock").ToString(), Keyboard.IsKeyToggled(Key.NumLock));
+            }
+            else if (vkCode == 0x91 && SettingsManager.Current.LockKeysScrollEnabled) // Scroll Lock
+            {
+                lockWindow ??= new LockWindow();
+                lockWindow.ShowLockFlyout(FindResource("LockWindow_ScrollLock").ToString(), Keyboard.IsKeyToggled(Key.Scroll));
+            }
+            else if (vkCode == 0x2D && SettingsManager.Current.LockKeysInsertEnabled) // Insert
+            {
+                lockWindow ??= new LockWindow();
+                lockWindow.ShowLockFlyout("Insert", Keyboard.IsKeyToggled(Key.Insert));
+            }
+        }
+    }
+
+    // show the media flyout with debounce
+    private bool TryShowMediaFlyoutDebounced()
+    {
+        long currentTime = Environment.TickCount64;
+        // debounce to prevent hangs with rapid key presses
+        if ((currentTime - _lastFlyoutTime) < 500) // 500ms debounce time
+        {
+            return false;
+        }
+        _lastFlyoutTime = currentTime;
+        ShowMediaFlyout();
+        return true;
+    }
+
+    public async void ShowMediaFlyout(bool toggleMode = false, bool forceShow = false)
+    {
+        var activeSession = GetActiveMediaSession();
+        if (activeSession == null ||
+            (!forceShow && !SettingsManager.Current.MediaFlyoutEnabled) ||
+            FullscreenDetector.IsFullscreenApplicationRunning())
+            return;
+
+        // If in toggle mode and flyout is visible, close it
+        if (toggleMode && Visibility == Visibility.Visible && !_isHiding)
+        {
+            CloseAnimation(this);
+            _isHiding = true;
+            cts.Cancel();
+            await Task.Delay(getDuration());
+            if (_isHiding)
+            {
+                Hide();
+                if (_seekBarEnabled)
+                    HandlePlayBackState(GlobalSystemMediaTransportControlsSessionPlaybackStatus.Paused);
+            }
+            return;
+        }
+
+        // The tint is a baked copy of the theme's background colour, and the flyout is about to become
+        // visible: re-bake it from what is current right now instead of trusting the change detector in
+        // UpdateUI (see ReapplyMediaFlyoutTint for the failure modes that motivated this).
+        ReapplyMediaFlyoutTint("media flyout shown");
+
+        // Remembered before this method shows the flyout, so the reposition below only runs when the
+        // flyout actually appeared underneath an already visible volume flyout.
+        bool mediaFlyoutWasDisplayed = IsMediaFlyoutDisplayed;
+
+        await UpdateUIAsync(activeSession);
+        if (_seekBarEnabled)
+            HandlePlayBackState(activeSession.ControlSession.GetPlaybackInfo().PlaybackStatus);
+
+        if (nextUpWindow != null) // close NextUpWindow if it's open
+        {
+            nextUpWindow.Close();
+            nextUpWindow = null;
+        }
+
+        if (_isHiding == true)
+        {
+            _isHiding = false;
+            OpenAnimation(this, reserveNativeVolumeOsdSpace: true);
+        }
+        cts.Cancel();
+        cts = new CancellationTokenSource();
+        Visibility = Visibility.Visible;
+        WindowHelper.SetTopmost(this);
+
+        // A volume flyout that was summoned on its own (taskbar wheel) sits where this flyout just
+        // appeared, and the setting says it belongs above it. Only move it when this call is what made
+        // the media flyout appear, so repeatedly summoning an already visible flyout does not nudge it.
+        if (!mediaFlyoutWasDisplayed)
+            volumeMixerWindow?.MoveAboveMediaFlyoutIfVisible();
+
+        ScheduleMediaFlyoutAutoHide();
+    }
+
+    /// <summary>
+    /// Whether the media flyout is currently meant to be on screen: visible, opening, or counting down to
+    /// its auto-hide. False while it is hidden and while it is closing.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ShowMediaFlyout"/> is asynchronous and only sets <c>IsVisible</c> after it has read the
+    /// media properties, so a caller that is about to show this flyout must pass that intention explicitly
+    /// instead of reading this property - see <c>VolumeMixerWindow.ShowFlyout</c>.
+    /// </remarks>
+    public bool IsMediaFlyoutDisplayed => !_isHiding;
+
+    /// <summary>
+    /// Cancels a pending auto-hide countdown.
+    /// </summary>
+    private void CancelMediaFlyoutAutoHide()
+    {
+        CancellationTokenSource? pending = _mediaFlyoutAutoHideCts;
+        _mediaFlyoutAutoHideCts = null;
+        pending?.Cancel();
+        pending?.Dispose();
+    }
+
+    /// <summary>
+    /// Arms the countdown that closes the flyout after the configured duration.
+    /// </summary>
+    /// <remarks>
+    /// The delay is linked to the flyout's own token, so every existing <c>cts.Cancel()</c> call site
+    /// (closing the flyout, a display change, shutdown) also stops the countdown. The pointer is only
+    /// re-checked when the countdown expires, instead of ten times a second for the whole lifetime of
+    /// the flyout.
+    /// </remarks>
+    private async void ScheduleMediaFlyoutAutoHide()
+    {
+        CancelMediaFlyoutAutoHide();
+
+        var autoHideCts = new CancellationTokenSource();
+        _mediaFlyoutAutoHideCts = autoHideCts;
+
+        try
+        {
+            // created inside the try: reading cts.Token throws once cts has been disposed on shutdown
+            using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(autoHideCts.Token, cts.Token);
+
+            await Task.Delay(SettingsManager.Current.Duration, linked.Token);
+
+            // MouseEnter does not fire for a flyout that appears underneath a stationary pointer, so the
+            // hover state is confirmed once here before anything is hidden.
+            if (SettingsManager.Current.MediaFlyoutAlwaysDisplay || IsMediaFlyoutHovered())
+            {
+                ScheduleMediaFlyoutAutoHide();
+                return;
+            }
+
+            CloseAnimation(this);
+            _isHiding = true;
+            await Task.Delay(getDuration(), linked.Token);
+            if (_isHiding == false) return;
+            Hide();
+            if (_seekBarEnabled)
+                HandlePlayBackState(GlobalSystemMediaTransportControlsSessionPlaybackStatus.Paused);
+        }
+        catch (TaskCanceledException)
+        {
+            // the countdown was replaced or the flyout was closed, do nothing
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to auto-hide the media flyout");
+        }
+        finally
+        {
+            if (ReferenceEquals(_mediaFlyoutAutoHideCts, autoHideCts))
+                _mediaFlyoutAutoHideCts = null;
+
+            autoHideCts.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Checks whether the pointer is currently over the media flyout or over the volume flyout stacked
+    /// above it, in which case the flyout has to stay open.
+    /// </summary>
+    private bool IsMediaFlyoutHovered()
+    {
+        if (WindowHelper.IsMouseOverWindow(this))
+            return true;
+
+        return SettingsManager.Current.VolumeControlAboveMediaFlyout
+            && SettingsManager.Current.VolumeControlEnabled
+            && volumeMixerWindow is { IsVisible: true }
+            && WindowHelper.IsMouseOverWindow(volumeMixerWindow);
+    }
+
+    private void UpdateMediaFlyoutCloseButtonVisibility()
+    {
+        MediaFlyoutCloseButton.Visibility = SettingsManager.Current.MediaFlyoutAlwaysDisplay && !SettingsManager.Current.CompactLayout ? Visibility.Visible : Visibility.Collapsed;
+        ControlClose.Visibility = SettingsManager.Current.MediaFlyoutAlwaysDisplay && SettingsManager.Current.CompactLayout ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>
+    /// Reads the media properties away from the UI thread and then renders the flyout
+    /// </summary>
+    /// <remarks>
+    /// <see cref="TryGetMediaPropertiesAsync"/> can stall for hundreds of milliseconds, which used to
+    /// freeze the flyout (and the whole application) because it ran inside the dispatcher. Callers that
+    /// are not async can discard the returned task: both this method and <see cref="HandlePlayBackState"/>
+    /// read from the same live session, so their relative order does not change the rendered result.
+    /// </remarks>
+    private async Task UpdateUIAsync(MediaSession? mediaSession)
+    {
+        try
+        {
+            var controlSession = mediaSession?.ControlSession;
+            if (controlSession == null)
+            {
+                // Either there is no session at all (draw the idle state) or the session has no control
+                // session yet (keep whatever is on screen): both are handled without reading anything.
+                UpdateUI(mediaSession, null);
+                return;
+            }
+
+            var songInfo = await TryGetMediaPropertiesAsync(controlSession);
+            UpdateUI(mediaSession, songInfo);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to update the media flyout");
+        }
+    }
+
+    private void UpdateUI(MediaSession? mediaSession, GlobalSystemMediaTransportControlsSessionMediaProperties? songInfo)
+    {
+        if (_layout != SettingsManager.Current.CompactLayout ||
+            _shuffleEnabled != SettingsManager.Current.ShuffleEnabled ||
+            _repeatEnabled != SettingsManager.Current.RepeatEnabled ||
+            _playerInfoEnabled != SettingsManager.Current.PlayerInfoEnabled ||
+            _centerTitleArtist != SettingsManager.Current.CenterTitleArtist ||
+            _seekBarEnabled != SettingsManager.Current.SeekbarEnabled ||
+            _alwaysDisplay != SettingsManager.Current.MediaFlyoutAlwaysDisplay)
+            UpdateUILayout();
+
+        // no session at all: render the idle state (RefreshFilteredMedia calls this with null on purpose)
+        if (mediaSession == null)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                UpdateMediaFlyoutCloseButtonVisibility();
+                this.EnableBackdrop(); // ensures the backdrop is enabled as sometimes it gets disabled
+
+                SongTitle.Text = "No media playing";
+                SongArtist.Text = string.Empty;
+                SongImage.ImageSource = null;
+                SymbolPlayPause.Symbol = Wpf.Ui.Controls.SymbolRegular.Stop16;
+                ControlPlayPause.IsEnabled = false;
+                ControlPlayPause.Opacity = 0.35;
+                ControlBack.IsEnabled = ControlForward.IsEnabled = false;
+                ControlBack.Opacity = ControlForward.Opacity = 0.35;
+                SongInfoStackPanel.ToolTip = string.Empty;
+            });
+            return;
+        }
+
+        // sometimes mediaSession.ControlSession can be null - keep whatever is on screen in that case
+        if (mediaSession.ControlSession == null)
+            return;
+
+        var controlSession = mediaSession.ControlSession;
+
+        Dispatcher.Invoke(() =>
+        {
+            UpdateMediaFlyoutCloseButtonVisibility();
+            this.EnableBackdrop(); // ensures the backdrop is enabled as sometimes it gets disabled
+
+            var mediaProperties = controlSession.GetPlaybackInfo();
+            if (mediaProperties != null)
+            {
+                // A play/pause command may still be waiting for the player to report the change (Windows keeps
+                // repeating the previous status until then): show the status the command asked for instead of
+                // the repeated one, so summoning the flyout does not bring back the old symbol.
+                var playbackStatus = ResolvePlaybackStatus(mediaSession.Id, mediaProperties.PlaybackStatus)
+                    ?? mediaProperties.PlaybackStatus;
+
+                if (playbackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
+                {
+                    SymbolPlayPause.Symbol = Wpf.Ui.Controls.SymbolRegular.Pause16;
+                }
+                else
+                {
+                    SymbolPlayPause.Symbol = Wpf.Ui.Controls.SymbolRegular.Play16;
+                }
+
+                ControlPlayPause.IsEnabled = mediaProperties.Controls.IsPlayEnabled || mediaProperties.Controls.IsPauseEnabled;
+
+                ControlPlayPause.Opacity = ControlPlayPause.IsEnabled ? 1 : 0.35;
+
+                ControlBack.IsEnabled = ControlForward.IsEnabled = mediaProperties.Controls.IsNextEnabled;
+                ControlBack.Opacity = ControlForward.Opacity = mediaProperties.Controls.IsNextEnabled ? 1 : 0.35;
+
+                if (SettingsManager.Current.RepeatEnabled && !SettingsManager.Current.CompactLayout)
+                {
+                    ControlRepeat.Visibility = Visibility.Visible;
+                    ControlRepeat.IsEnabled = mediaProperties.Controls.IsRepeatEnabled;
+                    ControlRepeat.Opacity = mediaProperties.Controls.IsRepeatEnabled ? 1 : 0.35;
+                    if (mediaProperties.AutoRepeatMode == global::Windows.Media.MediaPlaybackAutoRepeatMode.List)
+                    {
+                        SymbolRepeat.Symbol = Wpf.Ui.Controls.SymbolRegular.ArrowRepeatAll24;
+                        SymbolRepeat.Opacity = 1;
+                    }
+                    else if (mediaProperties.AutoRepeatMode == global::Windows.Media.MediaPlaybackAutoRepeatMode.Track)
+                    {
+                        SymbolRepeat.Symbol = Wpf.Ui.Controls.SymbolRegular.ArrowRepeat124;
+                        SymbolRepeat.Opacity = 1;
+                    }
+                    else if (mediaProperties.AutoRepeatMode == global::Windows.Media.MediaPlaybackAutoRepeatMode.None)
+                    {
+                        SymbolRepeat.Symbol = Wpf.Ui.Controls.SymbolRegular.ArrowRepeatAllOff24;
+                        SymbolRepeat.Opacity = 0.5;
+                    }
+                }
+                else ControlRepeat.Visibility = Visibility.Collapsed;
+
+
+                if (SettingsManager.Current.ShuffleEnabled && !SettingsManager.Current.CompactLayout)
+                {
+                    ControlShuffle.Visibility = Visibility.Visible;
+                    ControlShuffle.IsEnabled = mediaProperties.Controls.IsShuffleEnabled;
+                    ControlShuffle.Opacity = mediaProperties.Controls.IsShuffleEnabled ? 1 : 0.35;
+                    if (mediaProperties.IsShuffleActive == true)
+                    {
+                        SymbolShuffle.Symbol = Wpf.Ui.Controls.SymbolRegular.ArrowShuffle24;
+                        SymbolShuffle.Opacity = 1;
+                    }
+                    else
+                    {
+                        SymbolShuffle.Symbol = Wpf.Ui.Controls.SymbolRegular.ArrowShuffleOff24;
+                        SymbolShuffle.Opacity = 0.5;
+                    }
+                }
+                else ControlShuffle.Visibility = Visibility.Collapsed;
+
+
+                if (SettingsManager.Current.PlayerInfoEnabled && !SettingsManager.Current.CompactLayout)
+                {
+                    MediaIdButton.Visibility = Visibility.Visible;
+                    (string title, ImageSource? Icon) = MediaPlayerData.GetAndCacheMediaPlayerData(mediaSession.Id);
+                    MediaId.Text = title;
+                    if (Icon != null)
+                    {
+                        MediaIdIcon.Source = Icon;
+                        MediaIdIcon.Visibility = Visibility.Visible;
+                    }
+                    else
+                    {
+                        MediaIdIcon.Visibility = Visibility.Collapsed;
+                    }
+                }
+                else MediaIdButton.Visibility = Visibility.Collapsed;
+
+                // background blurred image visibility setting
+                BackgroundImageStyle1.Visibility = SettingsManager.Current.MediaFlyoutBackgroundBlur == 1 ? Visibility.Visible : Visibility.Collapsed;
+                BackgroundImageStyle2.Visibility = SettingsManager.Current.MediaFlyoutBackgroundBlur == 2 ? Visibility.Visible : Visibility.Collapsed;
+                BackgroundImageStyle3.Visibility = SettingsManager.Current.MediaFlyoutBackgroundBlur == 3 ? Visibility.Visible : Visibility.Collapsed;
+
+                // color play/pause button
+                if (BitmapHelper.SavedDominantColors.Count > 0)
+                {
+                    SolidColorBrush brush = BitmapHelper.SavedDominantColors.First();
+                    ControlPlayPause.Background = brush;
+                }
+
+                // acrylic effect setting
+                var appliedTheme = Wpf.Ui.Appearance.ApplicationThemeManager.GetAppTheme();
+                if (SettingsManager.Current.MediaFlyoutAcrylicWindowEnabled != _acrylicEnabled
+                || appliedTheme != _appliedTheme) // if the effective theme changes, reapply the acrylic for the new background color
+                {
+                    _acrylicEnabled = SettingsManager.Current.MediaFlyoutAcrylicWindowEnabled;
+                    _appliedTheme = appliedTheme;
+                    ToggleBlur(); // called enabled but it actually toggles based on the setting
+                }
+            }
+
+            // NOTE: the properties were read by UpdateUIAsync before the dispatcher was entered, so
+            // nothing here blocks the UI thread any more.
+            if (songInfo != null)
+            {
+                SongTitle.Text = songInfo.Title;
+                SongArtist.Text = songInfo.Artist;
+                var image = BitmapHelper.GetThumbnail(songInfo.Thumbnail);
+                SongImage.ImageSource = image;
+
+                // set tooltip
+                SongInfoStackPanel.ToolTip = string.Empty;
+                SongInfoStackPanel.ToolTip += !String.IsNullOrEmpty(songInfo.Title) ? songInfo.Title : string.Empty;
+                SongInfoStackPanel.ToolTip += !String.IsNullOrEmpty(songInfo.Artist) ? "\n\n" + songInfo.Artist : string.Empty;
+
+                // background blurred image
+                if (SettingsManager.Current.MediaFlyoutBackgroundBlur != 0)
+                {
+                    // make image 1:1 aspect ratio so gradient masks work for non-square images
+                    var croppedImage = BitmapHelper.CropToSquare(image);
+
+                    switch (SettingsManager.Current.MediaFlyoutBackgroundBlur)
+                    {
+                        case 1:
+                            BackgroundImageStyle1.Source = croppedImage;
+                            break;
+                        case 2:
+                            BackgroundImageStyle2.Source = croppedImage;
+                            break;
+                        case 3:
+                            BackgroundImageStyle3.Source = croppedImage;
+                            break;
+                    }
+                }
+
+                SongImagePlaceholder.Visibility = SongImage.ImageSource == null ? Visibility.Visible : Visibility.Collapsed;
+
+                if (_seekBarEnabled)
+                {
+                    var timeline = controlSession.GetTimelineProperties();
+
+                    // State tracking
+                    bool mediaSessionSupportsSeekbar = timeline.MaxSeekTime.TotalSeconds >= 1.0; // Heuristics
+
+                    if (_mediaSessionSupportsSeekbar != mediaSessionSupportsSeekbar)
+                    {
+                        _mediaSessionSupportsSeekbar = mediaSessionSupportsSeekbar;
+                        UpdateUILayout();
+                        // Force refly
+                        _isHiding = true;
+                        ShowMediaFlyout();
+                    }
+
+                    if (mediaSessionSupportsSeekbar)
+                    {
+                        Seekbar.Maximum = timeline.MaxSeekTime.TotalSeconds;
+                        SeekbarMaxDuration.Text = timeline.MaxSeekTime.ToString(timeline.MaxSeekTime.Hours > 0 ? @"hh\:mm\:ss" : @"mm\:ss");
+                    }
+                }
+            }
+        });
+    }
+
+    private void UpdateUILayout() // update the layout based on the settings
+    {
+        Dispatcher.Invoke(() =>
+        {
+            int extraWidth = SettingsManager.Current.RepeatEnabled ? 36 : 0;
+            extraWidth += SettingsManager.Current.ShuffleEnabled ? 36 : 0;
+            extraWidth += SettingsManager.Current.PlayerInfoEnabled ? 72 : 0;
+            // keep minimum width at 72 even if all extra features are disabled to prevent the widget from being too small
+            extraWidth = Math.Max(extraWidth, 72);
+
+            int extraHeight = SettingsManager.Current.SeekbarEnabled && _mediaSessionSupportsSeekbar ? 36 : 0;
+
+            if (SettingsManager.Current.CompactLayout) // compact layout
+            {
+                Height = 60 + extraHeight;
+                Width = 400;
+                BodyStackPanel.Orientation = Orientation.Horizontal;
+                BodyStackPanel.Width = 300;
+                ControlsStackPanelContainer.Margin = new Thickness(2, 0, 0, 0);
+                ControlsStackPanelContainer.Width = 104;
+                ControlsStackPanelContainer.HorizontalAlignment = HorizontalAlignment.Left;
+                ControlsStackPanel.HorizontalAlignment = HorizontalAlignment.Left;
+                MediaIdButton.Visibility = Visibility.Collapsed;
+                SongImageBorder.Margin = new Thickness(0);
+                SongImageBorder.Height = 36;
+                SongInfoStackPanel.Margin = new Thickness(8, 0, 0, 0);
+                SongInfoStackPanel.Width = 182;
+                if (SettingsManager.Current.MediaFlyoutAlwaysDisplay)
+                {
+                    SongInfoStackPanel.Width -= 36;
+                    ControlsStackPanelContainer.Width += 44;
+                }
+            }
+            else // normal layout
+            {
+                bool centerControlsWithSongInfo = SettingsManager.Current.CenterTitleArtist && !SettingsManager.Current.PlayerInfoEnabled;
+                Height = 112 + extraHeight;
+                Width = 310 - 72 + extraWidth;
+                BodyStackPanel.Orientation = Orientation.Vertical;
+                BodyStackPanel.Width = 194 - 72 + extraWidth;
+                ControlsStackPanelContainer.Margin = new Thickness(12, 8, 0, 0);
+                ControlsStackPanelContainer.Width = double.NaN;
+                ControlsStackPanelContainer.HorizontalAlignment = HorizontalAlignment.Stretch;
+                ControlsStackPanel.HorizontalAlignment = centerControlsWithSongInfo ? HorizontalAlignment.Center : HorizontalAlignment.Left;
+                MediaIdButton.Visibility = Visibility.Visible;
+                SongImageBorder.Margin = new Thickness(6);
+                SongImageBorder.Height = 78;
+                SongInfoStackPanel.Margin = new Thickness(12, 0, 0, 0);
+                SongInfoStackPanel.Width = 182 - 72 + extraWidth;
+            }
+
+            var alignment = SettingsManager.Current.CenterTitleArtist ? HorizontalAlignment.Center : HorizontalAlignment.Left;
+            SongTitle.HorizontalAlignment = alignment;
+            SongArtist.HorizontalAlignment = alignment;
+
+            SeekbarWrapper.Visibility = SettingsManager.Current.SeekbarEnabled ? Visibility.Visible : Visibility.Collapsed;
+        });
+
+        SyncSettingsSnapshot();
+    }
+
+    /// <summary>
+    /// Stores the settings the UI was last laid out for, so <see cref="UpdateUI"/> can detect changes.
+    /// </summary>
+    private void SyncSettingsSnapshot()
+    {
+        _position = SettingsManager.Current.Position;
+        _layout = SettingsManager.Current.CompactLayout;
+        _repeatEnabled = SettingsManager.Current.RepeatEnabled;
+        _shuffleEnabled = SettingsManager.Current.ShuffleEnabled;
+        _playerInfoEnabled = SettingsManager.Current.PlayerInfoEnabled;
+        _centerTitleArtist = SettingsManager.Current.CenterTitleArtist;
+        _seekBarEnabled = SettingsManager.Current.SeekbarEnabled;
+        _alwaysDisplay = SettingsManager.Current.MediaFlyoutAlwaysDisplay;
+    }
+
+    private async void MediaIdButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!SettingsManager.Current.PlayerInfoEnabled || SettingsManager.Current.CompactLayout) return;
+        e.Handled = true;
+        _ = TryOpenMediaPlayerAsync();
+    }
+
+    private void Back_Click(object sender, RoutedEventArgs e)
+    {
+        _ = TrySkipPreviousAsync();
+    }
+
+    private void PlayPause_Click(object sender, RoutedEventArgs e)
+    {
+        _ = TryTogglePlayPauseAsync();
+    }
+
+    private void Forward_Click(object sender, RoutedEventArgs e)
+    {
+        _ = TrySkipNextAsync();
+    }
+
+    private async void Repeat_Click(object sender, RoutedEventArgs e)
+    {
+        var activeSession = GetActiveMediaSession();
+        if (activeSession == null) return;
+
+        if (activeSession.ControlSession.GetPlaybackInfo().AutoRepeatMode == global::Windows.Media.MediaPlaybackAutoRepeatMode.None)
+        {
+            SymbolRepeat.Dispatcher.Invoke(() => SymbolRepeat.Symbol = Wpf.Ui.Controls.SymbolRegular.ArrowRepeatAll24);
+            await activeSession.ControlSession.TryChangeAutoRepeatModeAsync(global::Windows.Media.MediaPlaybackAutoRepeatMode.List);
+        }
+        else if (activeSession.ControlSession.GetPlaybackInfo().AutoRepeatMode == global::Windows.Media.MediaPlaybackAutoRepeatMode.List)
+        {
+            SymbolRepeat.Dispatcher.Invoke(() => SymbolRepeat.Symbol = Wpf.Ui.Controls.SymbolRegular.ArrowRepeat124);
+            await activeSession.ControlSession.TryChangeAutoRepeatModeAsync(global::Windows.Media.MediaPlaybackAutoRepeatMode.Track);
+        }
+        else if (activeSession.ControlSession.GetPlaybackInfo().AutoRepeatMode == global::Windows.Media.MediaPlaybackAutoRepeatMode.Track)
+        {
+            SymbolRepeat.Dispatcher.Invoke(() => SymbolRepeat.Symbol = Wpf.Ui.Controls.SymbolRegular.ArrowRepeatAllOff24);
+            await activeSession.ControlSession.TryChangeAutoRepeatModeAsync(global::Windows.Media.MediaPlaybackAutoRepeatMode.None);
+        }
+    }
+
+    private async void Shuffle_Click(object sender, RoutedEventArgs e)
+    {
+        var activeSession = GetActiveMediaSession();
+        if (activeSession == null) return;
+
+        if (activeSession.ControlSession.GetPlaybackInfo().IsShuffleActive == true)
+        {
+            SymbolShuffle.Dispatcher.Invoke(() => SymbolShuffle.Symbol = Wpf.Ui.Controls.SymbolRegular.ArrowShuffleOff24);
+            await activeSession.ControlSession.TryChangeShuffleActiveAsync(false);
+        }
+        else
+        {
+            SymbolShuffle.Dispatcher.Invoke(() => SymbolShuffle.Symbol = Wpf.Ui.Controls.SymbolRegular.ArrowShuffle24);
+            await activeSession.ControlSession.TryChangeShuffleActiveAsync(true);
+        }
+    }
+
+    private void Seekbar_OnPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (_isDragging) return;
+        _isDragging = true;
+
+        Slider slider = (Slider)sender;
+        System.Windows.Point clickPosition = e.GetPosition(slider);
+        double thumbWidth = slider.Template.FindName("Thumb", slider) is Thumb thumb ? thumb.ActualWidth : 0;
+        double ratio = (clickPosition.X - thumbWidth / 2) / (slider.ActualWidth - thumbWidth);
+        ratio = Math.Max(0, Math.Min(1, ratio));
+        double targetSeconds = ratio * slider.Maximum;
+        // Bug: if the position is 0, then it will cause the position to not change when changing playback position
+        if (targetSeconds == 0) targetSeconds = 1;
+        Dispatcher.Invoke(() =>
+        {
+            Seekbar.Value = TimeSpan.FromSeconds(targetSeconds).TotalSeconds;
+        });
+    }
+
+    private async void Seekbar_OnPreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (GetActiveMediaSession() is { } session)
+        {
+            var seekPosition = TimeSpan.FromSeconds(Seekbar.Value);
+            if (seekPosition == TimeSpan.Zero) seekPosition = TimeSpan.FromSeconds(1);
+            await session.ControlSession.TryChangePlaybackPositionAsync(seekPosition.Ticks);
+        }
+        _isDragging = false;
+    }
+
+    private void Seekbar_OnValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (!_isDragging) return;
+        var timespan = TimeSpan.FromSeconds(e.NewValue);
+        Dispatcher.Invoke(() =>
+        {
+            SeekbarCurrentDuration.Text = timespan.ToString(timespan.Hours > 0 ? @"hh\:mm\:ss" : @"mm\:ss");
+        });
+    }
+
+    private void SeekbarUpdateUi(object? sender)
+    {
+        if (DateTime.Now.Subtract(_lastSelfUpdateTimestamp).TotalSeconds < 1) return;
+
+        if (!_seekBarEnabled || Visibility != Visibility.Visible || _isDragging) return;
+        if (GetActiveMediaSession() is not { } session) return;
+
+        var timeline = session.ControlSession.GetTimelineProperties();
+        var pos = timeline.Position + (DateTime.Now - timeline.LastUpdatedTime.DateTime);
+        if (pos > timeline.EndTime)
+        {
+            HandlePlayBackState(GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed);
+            return;
+        }
+
+        UpdateSeekbarCurrentDuration(pos);
+    }
+
+    private void UpdateSeekbarCurrentDuration(TimeSpan pos)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            Seekbar.Value = pos.TotalSeconds;
+            SeekbarCurrentDuration.Text = pos.ToString(pos.Hours > 0 ? @"hh\:mm\:ss" : @"mm\:ss");
+        });
+    }
+
+    private void HandlePlayBackState(GlobalSystemMediaTransportControlsSessionPlaybackStatus? status)
+    {
+        if (status == null) return;
+        if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
+        {
+            if (_isActive) return;
+            _isActive = true;
+            _positionTimer.Change(0, _seekbarUpdateInterval);
+        }
+        else
+        {
+            if (!_isActive) return;
+            _isActive = false;
+            _positionTimer.Change(Timeout.Infinite, Timeout.Infinite);
+        }
+    }
+
+    private void CleanupResources()
+    {
+        // Both OnClosed and the tray "Quit" menu call this, and Application.Current.Shutdown() from the
+        // quit handler closes the window and runs OnClosed afterwards. Without this guard the whole
+        // teardown - including NLog.LogManager.Shutdown() - ran twice.
+        if (Interlocked.Exchange(ref _isCleaningUp, 1) == 1)
+        {
+            return;
+        }
+
+        // try saving settings before exiting if window is still open
+        // Re-enabled: SaveSettings now serializes the write and performs the file replacement
+        // synchronously while holding its lock, so it can no longer race with the debounced save.
+        try
+        {
+            SettingsManager.SaveSettings();
+            Logger.Info("Settings saved successfully on cleanup");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Error while saving settings on cleanup");
+        }
+
+        // should be handled automatically on app exit but just in case
+        try
+        {
+            _displayRefreshTimer.Stop();
+            _displayRefreshTimer.Tick -= DisplayRefreshTimer_Tick;
+
+            // unsubscribe from events
+            mediaManager.OnAnyMediaPropertyChanged -= MediaManager_OnAnyMediaPropertyChanged;
+            mediaManager.OnAnyPlaybackStateChanged -= CurrentSession_OnPlaybackStateChanged;
+            mediaManager.OnAnyTimelinePropertyChanged -= MediaManager_OnAnyTimelinePropertyChanged;
+            mediaManager.OnAnySessionClosed -= MediaManager_OnAnySessionClosed;
+
+            // the theme, power and session events are static, so they would keep this window alive
+            UnhookThemeAndPowerNotifications();
+
+            // dispose managed resources
+            _positionTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+            _positionTimer?.Dispose();
+            cts?.Cancel();
+            cts?.Dispose();
+
+            CancelMediaFlyoutAutoHide();
+
+            TaskbarVisualizerControl.DisposeVisualizer();
+
+            // the visualizer was the only subscriber, so the audio device monitor can be released now
+            AudioDeviceMonitor.DisposeInstance();
+
+            // unhook hooks
+            if (_hookId != IntPtr.Zero)
+            {
+                UnhookWindowsHookEx(_hookId);
+                _hookId = IntPtr.Zero;
+            }
+
+            if (_windowHandle != IntPtr.Zero)
+            {
+                DeregisterShellHookWindow(_windowHandle);
+            }
+
+            // clean up other resources
+            if (lockWindow?.IsLoaded == true)
+                lockWindow.Close();
+
+            if (nextUpWindow?.IsLoaded == true)
+                nextUpWindow.Close();
+
+            if (taskbarWindow?.IsLoaded == true)
+                taskbarWindow.Close();
+
+            if (volumeMixerWindow?.IsLoaded == true)
+                volumeMixerWindow.Close();
+
+            // restore native volume OSD
+            VolumeMixerWindow.ShowVolumeOsd();
+
+            // dispose mutex
+            singleton?.Dispose();
+
+            // flush and close NLog
+            NLog.LogManager.Shutdown();
+        }
+        catch (ObjectDisposedException)
+        {
+            // harmless shutdown exceptions
+        }
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        try
+        {
+            CleanupResources();
+        }
+        finally
+        {
+            base.OnClosed(e);
+        }
+    }
+
+    private void MicaWindow_MouseEnter(object sender, MouseEventArgs e) // keep the flyout open when mouse is over
+    {
+        ShowMediaFlyout();
+    }
+
+    private void NotifyIconQuit_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            CleanupResources();
+        }
+        finally
+        {
+            Application.Current.Shutdown();
+        }
+    }
+
+    private async Task<bool> WaitForExplorerReadyAsync(int timeoutMs = 60000)
+    {
+        var sw = Stopwatch.StartNew();
+
+        while (sw.ElapsedMilliseconds < timeoutMs)
+        {
+            IntPtr taskbar = FindWindow("Shell_TrayWnd", null);
+            if (taskbar != IntPtr.Zero &&
+                GetWindowRect(taskbar, out NativeMethods.RECT rect) &&
+                rect.Right > rect.Left &&
+                rect.Bottom > rect.Top)
+            {
+                return true; // taskbar exists and has geometry
+            }
+
+            await Task.Delay(200);
+        }
+
+        return false;
+    }
+
+    private void ScheduleDisplayEnvironmentRefresh(string reason)
+    {
+        if (Volatile.Read(ref _isCleaningUp) != 0)
+            return;
+
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(() => ScheduleDisplayEnvironmentRefresh(reason));
+            return;
+        }
+
+        if (!_pendingDisplayRefreshReasons.Contains(reason))
+            _pendingDisplayRefreshReasons.Add(reason);
+        _displayRefreshTimer.Stop();
+        _displayRefreshTimer.Start();
+        Logger.Debug($"Scheduled display environment refresh: {reason}");
+    }
+
+    private void DisplayRefreshTimer_Tick(object? sender, EventArgs e)
+    {
+        _displayRefreshTimer.Stop();
+
+        if (_displayRefreshInProgress || Volatile.Read(ref _isCleaningUp) != 0)
+            return;
+
+        string reason = _pendingDisplayRefreshReasons.Count > 0
+            ? string.Join(", ", _pendingDisplayRefreshReasons)
+            : "Unknown";
+        _pendingDisplayRefreshReasons.Clear();
+
+        _displayRefreshInProgress = true;
+        try
+        {
+            RefreshDisplayEnvironment(reason);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to refresh windows after a display environment change");
+        }
+        finally
+        {
+            _displayRefreshInProgress = false;
+        }
+    }
+
+    private void RefreshDisplayEnvironment(string reason)
+    {
+        var monitors = MonitorUtil.GetMonitors();
+        if (monitors.Count == 0)
+        {
+            Logger.Warn($"Display environment refresh skipped because no monitors were found ({reason})");
+            return;
+        }
+
+        Logger.Info($"Refreshing window DPI and placement after display change ({reason}); monitors={monitors.Count}");
+
+        // Stop placement animations that were calculated for the previous work area.
+        cts.Cancel();
+        cts.Dispose();
+        cts = new CancellationTokenSource(); // a cancelled source would abort the next flyout animation as soon as it starts
+        // The seekbar poller was driving a flyout that is hidden from here on; it is restarted by the
+        // next HandlePlayBackState(Playing) call.
+        _isActive = false;
+        _positionTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+        _isHiding = true;
+        Hide();
+
+        // Move the reusable main flyout to its current target monitor while hidden. This
+        // makes WPF process the per-monitor DPI transition before the next animation.
+        var targetMonitor = getSelectedMonitor();
+        WindowHelper.SetPosition(this, targetMonitor.workArea.Left, targetMonitor.workArea.Top);
+        InvalidateMeasure();
+        InvalidateArrange();
+        InvalidateVisual();
+        UpdateLayout();
+        SyncMainFlyoutSizeToCurrentDpi(new WindowInteropHelper(this).Handle);
+
+        // These windows retain an HWND for their lifetime. Recreate them so they cannot
+        // keep DPI, work-area, taskbar-parent, or UI Automation state from the old topology.
+        if (lockWindow != null)
+        {
+            lockWindow.Close();
+            lockWindow = null;
+        }
+
+        if (nextUpWindow != null)
+        {
+            nextUpWindow.Close();
+            nextUpWindow = null;
+        }
+
+        if (volumeMixerWindow != null)
+        {
+            volumeMixerWindow.Close();
+            volumeMixerWindow = new VolumeMixerWindow();
+        }
+
+        RecreateTaskbarWindow();
+    }
+
+    private nint WndProc(nint hwnd, int msg, nint wParam, nint lParam, ref bool handled)
+    {
+        // key events forwarded by the low-level keyboard hook (see HookCallback)
+        if (msg == WM_FLUENTFLYOUT_INPUT)
+        {
+            HandleGlobalKey((int)wParam, lParam != 0);
+            handled = true;
+            return 0;
+        }
+
+        // detect key presses from both keyboard hook and shell hook to show flyouts
+        if (msg == WM_SHELLHOOK && wParam == HSHELL_APPCOMMAND)
+        {
+            int highWord = (int)(lParam >> 16);
+            int cmd = highWord & 0x0FFF;
+            int device = highWord & 0xF000;
+
+            bool isMediaCommand = cmd switch
+            {
+                APPCOMMAND_MEDIA_PLAY_PAUSE => true,
+                APPCOMMAND_MEDIA_NEXTTRACK => true,
+                APPCOMMAND_MEDIA_PREVIOUSTRACK => true,
+                APPCOMMAND_MEDIA_STOP => true,
+                _ => false
+            };
+
+            bool isVolumeCommand = false;
+
+            if (!isMediaCommand && !SettingsManager.Current.MediaFlyoutVolumeKeysExcluded)
+            {
+                isVolumeCommand = cmd switch
+                {
+                    APPCOMMAND_VOLUME_MUTE => true,
+                    APPCOMMAND_VOLUME_DOWN => true,
+                    APPCOMMAND_VOLUME_UP => true,
+                    _ => false
+                };
+            }
+
+            if (!isMediaCommand && !isVolumeCommand)
+                return 0;
+
+            bool isKeyCommand = device == FAPPCOMMAND_KEY;
+
+            if (!isKeyCommand)
+                return 0;
+
+            bool result = TryShowMediaFlyoutDebounced();
+
+            if (!result)
+            {
+                return 0;
+            }
+
+            handled = true;
+        }
+        else if (msg == WM_TASKBARCREATED)
+        {
+            Logger.Warn("Explorer restart detected (TaskbarCreated)");
+
+            ExplorerRestarting = true;
+
+            // Defer recovery, do NOT touch tray/taskbar immediately
+            Dispatcher.BeginInvoke(async () =>
+            {
+                try
+                {
+                    // Wait for Explorer to actually stabilize
+                    if (await WaitForExplorerReadyAsync())
+                    {
+                        ExplorerRestarting = false;
+                        Logger.Info("Explorer stabilized, resuming taskbar integration");
+
+                        // Now it is safe to recreate tray icon
+                        RecreateTrayIconSafely();
+                    }
+                    else
+                    {
+                        Logger.Warn("Explorer did not stabilize within timeout; keeping integration disabled");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error(ex, "Explorer recovery failed");
+                }
+            }, DispatcherPriority.Background);
+
+            handled = true;
+            return 0;
+        }
+        else if (msg == WM_DISPLAYCHANGE)
+        {
+            ScheduleDisplayEnvironmentRefresh("WM_DISPLAYCHANGE");
+            return 0;
+        }
+        else if (msg == WM_DPICHANGED)
+        {
+            // Leave the message unhandled so WPF can update its internal DPI state,
+            // then size the native HWND from the logical WPF dimensions exactly once.
+            Dispatcher.BeginInvoke(() =>
+            {
+                InvalidateMeasure();
+                InvalidateArrange();
+                InvalidateVisual();
+                UpdateLayout();
+                SyncMainFlyoutSizeToCurrentDpi(hwnd);
+            }, DispatcherPriority.Loaded);
+            return 0;
+        }
+        else if (msg == WM_DWMCOMPOSITIONCHANGED)
+        {
+            // A DWM composition reset (resume from sleep, display driver reset, remote session reconnect)
+            // can drop the accent policy that carries the acrylic tint, and this message is the only
+            // notification for it. Re-apply the tint of every window that should have one; the flyout
+            // itself is re-applied even while hidden, so it is already correct when it next appears.
+            Logger.Info("DWM composition changed, re-applying acrylic tints");
+            ReapplyMediaFlyoutTint("DWM composition changed");
+            WindowBlurHelper.AdjustBlurOpacityForAllWindows(SettingsManager.Current.AcrylicBlurOpacity);
+            return 0;
+        }
+        else if (msg == WM_SETTINGCHANGE) // system settings changed
+        {
+            if (wParam.ToInt64() == SPI_SETWORKAREA)
+            {
+                ScheduleDisplayEnvironmentRefresh("WM_SETTINGCHANGE/SPI_SETWORKAREA");
+                return 0;
+            }
+
+            string? changedSetting = lParam == IntPtr.Zero ? null : Marshal.PtrToStringUni(lParam);
+            if (changedSetting == "SystemDockMode")
+            {
+                ScheduleDisplayEnvironmentRefresh($"WM_SETTINGCHANGE/{changedSetting}");
+                return 0;
+            }
+
+            // check if the changed setting is related to theme or accent color
+            if (changedSetting != "ImmersiveColorSet" && changedSetting != "WindowsThemeElement")
+                return 0;
+
+            Logger.Info($"System setting changed: {changedSetting}, from {msg}");
+
+            try
+            {
+                // update theme for taskbar widget since it's independent from the main app theme
+                ThemeManager.UpdateTaskbarWidget();
+                // update Acrylic windows background colors
+                WindowBlurHelper.AdjustBlurOpacityForAllWindows(SettingsManager.Current.AcrylicBlurOpacity);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex, "Failed to apply theme changes to taskbar widgets or Acrylic windows");
+            }
+            return 0;
+        }
+
+        return 0;
+    }
+
+    private void SyncMainFlyoutSizeToCurrentDpi(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero)
+            return;
+
+        uint dpi = GetDpiForWindow(hwnd);
+        if (dpi == 0)
+            return;
+
+        double dpiScale = dpi / 96.0;
+        int pixelWidth = (int)Math.Ceiling(Width * dpiScale);
+        int pixelHeight = (int)Math.Ceiling(Height * dpiScale);
+
+        if (!SetWindowPos(
+            hwnd,
+            0,
+            0,
+            0,
+            pixelWidth,
+            pixelHeight,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE))
+        {
+            Logger.Warn($"Failed to resize MainWindow for DPI; HWND=0x{hwnd.ToInt64():X}, DPI={dpi}, Size={pixelWidth}x{pixelHeight}, Win32Error={Marshal.GetLastWin32Error()}");
+        }
+    }
+
+    private void RecreateTrayIconSafely()
+    {
+        try
+        {
+            nIcon.Visibility = Visibility.Collapsed;
+
+            if (!SettingsManager.Current.NIconHide)
+            {
+                nIcon.Visibility = Visibility.Visible;
+                nIcon.Register();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to recreate tray icon safely");
+        }
+    }
+
+    private void MicaWindow_Loaded(object sender, RoutedEventArgs e)
+    {
+        Hide();
+        UpdateUILayout();
+        ThemeManager.ApplySavedTheme();
+
+        // The flyout's background is a baked value (see ReapplyMediaFlyoutTint), so it has to be refreshed
+        // from events rather than detected as changed. Hooking here means the subscriptions exist for
+        // exactly as long as the window is loaded.
+        HookThemeAndPowerNotifications();
+
+        // add tray icon hook when taskbar resets
+        try
+        {
+            HwndSource? source = PresentationSource.FromVisual(this) as HwndSource;
+            if (source != null)
+            {
+                source.AddHook(WndProc);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to initialize tray icon");
+        }
+
+        BitmapHelper.GetDominantColors(1);
+        volumeMixerWindow = new VolumeMixerWindow();
+        taskbarWindow = new TaskbarWindow();
+        _ = UpdateTaskbarAsync();
+    }
+
+    public void RecreateTaskbarWindow()
+    {
+        try
+        {
+            Logger.Info("Recreating Taskbar Widget window");
+
+            if (taskbarWindow != null)
+            {
+                try
+                {
+                    taskbarWindow.Close();
+                }
+                catch { }
+
+                taskbarWindow = null;
+            }
+
+            taskbarWindow = new();
+            _ = UpdateTaskbarAsync();
+
+            Logger.Info("Taskbar Widget window recreated successfully");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to recreate Taskbar Widget window");
+        }
+    }
+
+    private void nIcon_LeftClick(Wpf.Ui.Tray.Controls.NotifyIcon sender, RoutedEventArgs e) // change the behavior of the tray icon
+    {
+        if (SettingsManager.Current.NIconLeftClick == 0)
+        {
+            openSettings(sender, e);
+            //Wpf.Ui.Appearance.ApplicationThemeManager.Apply(ApplicationTheme.Light, WindowBackdropType.Mica); // to change the theme
+            //ThemeService themeService = new ThemeService();
+            //themeService.ChangeTheme(MicaWPF.Core.Enums.WindowsTheme.Light);
+        }
+        else if (SettingsManager.Current.NIconLeftClick == 1) ShowMediaFlyout();
+    }
+
+    private Task PauseOtherSessions(MediaSession currentMediaSession)
+    {
+        return Task.WhenAll(
+            mediaManager.CurrentMediaSessions.Values.Select(session =>
+            {
+                if (
+                    session.Id != currentMediaSession.Id &&
+                    session.ControlSession.GetPlaybackInfo().PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing
+                )
+                {
+                    return session.ControlSession.TryPauseAsync().AsTask();
+                }
+                return Task.CompletedTask;
+            })
+        );
+    }
+    internal void ToggleBlur()
+    {
+        if (SettingsManager.Current.MediaFlyoutAcrylicWindowEnabled)
+        {
+            WindowBlurHelper.EnableBlur(this);
+        }
+        else
+        {
+            WindowBlurHelper.DisableBlur(this);
+        }
+    }
+
+    /// <summary>
+    /// Re-bakes the flyout's acrylic tint from the colours that are current right now.
+    /// </summary>
+    /// <remarks>
+    /// The tint is not bound to anything: <c>SetWindowCompositionAttribute</c> copies the theme's background
+    /// colour into the window's accent policy once, and nothing updates that copy when the theme changes.
+    /// That copy used to be refreshed only from <see cref="UpdateUI"/>, when
+    /// <c>ApplicationThemeManager.GetAppTheme()</c> differed from the last value it had seen, and that
+    /// change detector cannot cover this: a theme change that arrives while the flyout is hidden is only
+    /// noticed the next time it happens to be shown, and a tint baked in the moment between "the theme
+    /// enum changed" and "the theme dictionaries were swapped" records the new theme and then never
+    /// retries - which is the reported "text switched, background did not" after a system light/dark
+    /// switch (sleep/resume widens that window, which is why it looked intermittent).
+    /// Re-baking unconditionally costs one resource lookup and one <c>SetWindowCompositionAttribute</c>
+    /// call, so the flyout now does it every time it is shown and on every theme/DWM/power event instead
+    /// of trying to detect that it is needed.
+    /// </remarks>
+    private void ReapplyMediaFlyoutTint(string reason)
+    {
+        try
+        {
+            ToggleBlur();
+
+            // Only record what was applied once it actually was applied: the change detector in UpdateUI
+            // would otherwise consider a failed attempt as done and never retry it.
+            _acrylicEnabled = SettingsManager.Current.MediaFlyoutAcrylicWindowEnabled;
+            _appliedTheme = Wpf.Ui.Appearance.ApplicationThemeManager.GetAppTheme();
+
+            Logger.Debug($"Re-applied the media flyout acrylic tint ({reason})");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, $"Failed to re-apply the media flyout acrylic tint ({reason})");
+        }
+    }
+
+    /// <summary>
+    /// Follows a theme change while the flyout is on screen. The tint is re-baked at
+    /// <see cref="DispatcherPriority.DataBind"/>: that is after the theme dictionaries have been swapped and
+    /// before the next frame is rendered, the same slot the settings window already uses for its repair.
+    /// </summary>
+    private void OnApplicationThemeChanged(Wpf.Ui.Appearance.ApplicationTheme currentTheme, System.Windows.Media.Color systemAccent)
+    {
+        try
+        {
+            Dispatcher.BeginInvoke(() => ReapplyMediaFlyoutTint("application theme changed"), DispatcherPriority.DataBind);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to schedule the media flyout tint refresh after a theme change");
+        }
+    }
+
+    /// <summary>
+    /// Wakes up with the flyout tint refreshed: resuming can leave the accent policy behind, and the theme
+    /// may have changed while the machine was asleep.
+    /// </summary>
+    private void OnSystemPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
+    {
+        if (e.Mode != PowerModes.Resume)
+            return;
+
+        try
+        {
+            Dispatcher.BeginInvoke(() => ReapplyMediaFlyoutTint("resumed from sleep"), DispatcherPriority.Background);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to schedule the media flyout tint refresh after resuming");
+        }
+    }
+
+    private void OnSystemSessionSwitch(object? sender, SessionSwitchEventArgs e)
+    {
+        if (e.Reason != SessionSwitchReason.SessionUnlock)
+            return;
+
+        try
+        {
+            Dispatcher.BeginInvoke(() => ReapplyMediaFlyoutTint("session unlocked"), DispatcherPriority.Background);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Failed to schedule the media flyout tint refresh after unlocking");
+        }
+    }
+
+    /// <summary>
+    /// Subscribes the handlers above. Split out of the constructor so the subscription is tied to the
+    /// window being loaded, and idempotent because Loaded can run again if the window is re-shown.
+    /// </summary>
+    private void HookThemeAndPowerNotifications()
+    {
+        if (_applicationThemeChangedHandler == null)
+        {
+            _applicationThemeChangedHandler = OnApplicationThemeChanged;
+            Wpf.Ui.Appearance.ApplicationThemeManager.Changed += _applicationThemeChangedHandler;
+        }
+
+        if (_powerModeChangedHandler != null)
+            return;
+
+        // The fields are only assigned once both subscriptions succeeded: a failure must not leave a
+        // half-hooked state that the guard above would then consider "already hooked" forever.
+        PowerModeChangedEventHandler powerModeHandler = OnSystemPowerModeChanged;
+        SessionSwitchEventHandler sessionSwitchHandler = OnSystemSessionSwitch;
+
+        try
+        {
+            SystemEvents.PowerModeChanged += powerModeHandler;
+            SystemEvents.SessionSwitch += sessionSwitchHandler;
+
+            _powerModeChangedHandler = powerModeHandler;
+            _sessionSwitchHandler = sessionSwitchHandler;
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                SystemEvents.PowerModeChanged -= powerModeHandler;
+                SystemEvents.SessionSwitch -= sessionSwitchHandler;
+            }
+            catch
+            {
+                // nothing left to do; the theme event and every flyout show still refresh the tint
+            }
+
+            // SystemEvents can be unavailable in non-interactive sessions; the tint then still follows the
+            // theme event and every flyout show, it just cannot react to resume on its own.
+            Logger.Warn(ex, "Failed to subscribe to system power and session events");
+        }
+    }
+
+    private void UnhookThemeAndPowerNotifications()
+    {
+        if (_applicationThemeChangedHandler != null)
+        {
+            Wpf.Ui.Appearance.ApplicationThemeManager.Changed -= _applicationThemeChangedHandler;
+            _applicationThemeChangedHandler = null;
+        }
+
+        if (_powerModeChangedHandler != null)
+        {
+            SystemEvents.PowerModeChanged -= _powerModeChangedHandler;
+            _powerModeChangedHandler = null;
+        }
+
+        if (_sessionSwitchHandler != null)
+        {
+            SystemEvents.SessionSwitch -= _sessionSwitchHandler;
+            _sessionSwitchHandler = null;
+        }
+    }
+
+    private void MediaFlyoutCloseButton_Click(object sender, RoutedEventArgs e)
+    {
+        // Use the updated ShowMediaFlyout method with toggle mode to close the flyout
+        ShowMediaFlyout(toggleMode: true);
+    }
+}
